@@ -1,0 +1,49 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity e_complex_arith is
+  generic (
+    DATA_WIDTH : positive := 16
+  );
+  port (
+    clk        : in  std_logic;
+    rst        : in  std_logic;                     -- asynchronous reset
+    ce         : in  std_logic;
+    a_re, a_im : in  signed(DATA_WIDTH-1 downto 0);
+    b_re, b_im : in  signed(DATA_WIDTH-1 downto 0);
+    op         : in  std_logic_vector(1 downto 0);  -- 00=add, 01=sub, 10=mul
+    y_re, y_im : out signed(2*DATA_WIDTH downto 0)
+  );
+end entity;
+
+architecture rtl of e_complex_arith is
+  signal re, im : signed(2*DATA_WIDTH downto 0);
+begin
+  process(clk, rst)
+  begin
+    if rst = '1' then
+      re <= (others => '0');
+      im <= (others => '0');
+    elsif rising_edge(clk) then
+      if ce = '1' then
+        case op is
+          when "00" =>  -- add
+            re <= resize(a_re, 2*DATA_WIDTH+1) + resize(b_re, 2*DATA_WIDTH+1);
+            im <= resize(a_im, 2*DATA_WIDTH+1) + resize(b_im, 2*DATA_WIDTH+1);
+          when "01" =>  -- sub
+            re <= resize(a_re, 2*DATA_WIDTH+1) - resize(b_re, 2*DATA_WIDTH+1);
+            im <= resize(a_im, 2*DATA_WIDTH+1) - resize(b_im, 2*DATA_WIDTH+1);
+          when "10" =>  -- multiply
+            re <= resize(a_re * b_re - a_im * b_im, 2*DATA_WIDTH+1);
+            im <= resize(a_re * b_im + a_im * b_re, 2*DATA_WIDTH+1);
+          when others =>
+            re <= (others => '0');
+            im <= (others => '0');
+        end case;
+      end if;
+    end if;
+  end process;
+  y_re <= re;
+  y_im <= im;
+end architecture;

@@ -1,0 +1,30 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity e_mux_n is
+  generic (
+    g_DATA_WIDTH : positive := 16;
+    g_N          : positive := 4;
+    g_SEL_WIDTH  : positive := 2
+  );
+  port (
+    i_sel  : in  std_logic_vector(g_SEL_WIDTH-1 downto 0);
+    i_din  : in  std_logic_vector(g_N*g_DATA_WIDTH-1 downto 0);
+    o_dout : out std_logic_vector(g_DATA_WIDTH-1 downto 0)
+  );
+end entity;
+
+architecture rtl of mux_n is
+begin
+  process(all)
+    variable idx : integer;
+  begin
+    idx := to_integer(unsigned(i_sel));
+    if idx < g_N then
+      o_dout <= i_din((idx+1)*g_DATA_WIDTH-1 downto idx*g_DATA_WIDTH);
+    else
+      o_dout <= (others => '0');
+    end if;
+  end process;
+end architecture;

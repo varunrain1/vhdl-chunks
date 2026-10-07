@@ -1,0 +1,75 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+use ieee.math_real.all;
+
+entity e_cordic is
+  generic (
+    XY_WIDTH    : positive := 16;
+    PHASE_WIDTH : positive := 16;
+    ITERATIONS  : positive := 16
+  );
+  port (
+    clk       : in  std_logic;
+    rst       : in  std_logic;                     -- asynchronous reset
+    ce        : in  std_logic;
+    x_in      : in  signed(XY_WIDTH-1 downto 0);
+    y_in      : in  signed(XY_WIDTH-1 downto 0);
+    phase_in  : in  signed(PHASE_WIDTH-1 downto 0);
+    x_out     : out signed(XY_WIDTH-1 downto 0);
+    y_out     : out signed(XY_WIDTH-1 downto 0);
+    phase_out : out signed(PHASE_WIDTH-1 downto 0)
+  );
+end entity;
+
+architecture rtl of e_cordic is
+  type xy_array is array (0 to ITERATIONS) of signed(XY_WIDTH-1 downto 0);
+  type ph_array is array (0 to ITERATIONS) of signed(PHASE_WIDTH-1 downto 0);
+
+  signal x, y : xy_array;
+  signal z    : ph_array;
+
+  type atan_table_t is array (0 to ITERATIONS-1) of signed(PHASE_WIDTH-1 downto 0);
+  function gen_atan return atan_table_t is
+    variable t     : atan_table_t;
+    variable angle : real;
+  begin
+    for i in 0 to ITERATIONS-1 loop
+      angle := arctan(2.0**(-i));
+      t(i)  := to_signed(integer(angle * 2.0**(PHASE_WIDTH-1) / MATH_PI), PHASE_WIDTH);
+    end loop;
+    return t;
+  end function;
+  constant ATAN_TABLE : atan_table_t := gen_atan;
+begin
+  process(clk, rst)
+  begin
+    if rst = '1' then
+      x <= (others => (others => '0'));
+      y <= (others => (others => '0'));
+      z <= (others => (others => '0'));
+    elsif rising_edge(clk) then
+      if ce = '1' then
+        x(0) <= x_in;
+        y(0) <= y_in;
+        z(0) <= phase_in;
+
+        for i in 0 to ITERATIONS-1 loop
+          if z(i)(PHASE_WIDTH-1) = '0' then
+            x(i+1) <= x(i) - shift_right(y(i), i);
+            y(i+1) <= y(i) + shift_right(x(i), i);
+            z(i+1) <= z(i) - ATAN_TABLE(i);
+          else
+            x(i+1) <= x(i) + shift_right(y(i), i);
+            y(i+1) <= y(i) - shift_right(x(i), i);
+            z(i+1) <= z(i) + ATAN_TABLE(i);
+          end if;
+        end loop;
+      end if;
+    end if;
+  end process;
+
+  x_out     <= x(ITERATIONS);
+  y_out     <= y(ITERATIONS);
+  phase_out <= z(ITERATIONS);
+end architecture;

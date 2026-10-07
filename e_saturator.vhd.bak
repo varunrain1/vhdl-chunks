@@ -1,0 +1,30 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity e_saturator is
+  generic (
+    IN_WIDTH  : positive := 20;
+    OUT_WIDTH : positive := 16
+  );
+  port (
+    din  : in  signed(IN_WIDTH-1 downto 0);
+    dout : out signed(OUT_WIDTH-1 downto 0)
+  );
+end entity;
+
+architecture rtl of e_saturator is
+  constant MAX_POS : signed(OUT_WIDTH-1 downto 0) := (OUT_WIDTH-1 => '0', others => '1');
+  constant MAX_NEG : signed(OUT_WIDTH-1 downto 0) := (OUT_WIDTH-1 => '1', others => '0');
+begin
+  process(all)
+  begin
+    if din > resize(MAX_POS, IN_WIDTH) then
+      dout <= MAX_POS;
+    elsif din < resize(MAX_NEG, IN_WIDTH) then
+      dout <= MAX_NEG;
+    else
+      dout <= resize(din, OUT_WIDTH);
+    end if;
+  end process;
+end architecture;

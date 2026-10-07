@@ -1,0 +1,58 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+use ieee.math_real.all;
+
+entity e_nco_dds is
+  generic (
+    PHASE_WIDTH : positive := 32;
+    DATA_WIDTH  : positive := 16;
+    LUT_DEPTH   : positive := 10
+  );
+  port (
+    clk       : in  std_logic;
+    rst       : in  std_logic;                     -- asynchronous reset
+    ce        : in  std_logic;
+    freq_word : in  unsigned(PHASE_WIDTH-1 downto 0);
+    phase_mod : in  signed(PHASE_WIDTH-1 downto 0) := (others => '0');
+    sine      : out signed(DATA_WIDTH-1 downto 0);
+    cosine    : out signed(DATA_WIDTH-1 downto 0)
+  );
+end entity;
+
+architecture rtl of e_nco_dds is
+  signal phase_acc : unsigned(PHASE_WIDTH-1 downto 0) := (others => '0');
+  signal phase     : unsigned(PHASE_WIDTH-1 downto 0);
+
+  type lut_t is array (0 to 2**LUT_DEPTH-1) of signed(DATA_WIDTH-1 downto 0);
+  function init_sine return lut_t is
+    variable l     : lut_t;
+    variable angle : real;
+  begin
+    for i in 0 to 2**LUT_DEPTH-1 loop
+      angle := real(i) * MATH_PI * 2.0 / real(2**LUT_DEPTH);
+      l(i)  := to_signed(integer(sin(angle) * (2.0**(DATA_WIDTH-1)-1.0)), DATA_WIDTH);
+    end loop;
+    return l;
+  end function;
+  constant SINE_LUT : lut_t := init_sine;
+
+  signal addr : unsigned(LUT_DEPTH-1 downto 0);
+begin
+  process(clk, rst)
+  begin
+    if rst = '1' then
+      phase_acc <= (others => '0');
+    elsif rising_edge(clk) then
+      if ce = '1' then
+        phase_acc <= phase_acc + freq_word;
+      end if;
+    end if;
+  end process;
+
+  phase <= phase_acc + unsigned(phase_mod);
+  addr  <= phase(PHASE_WIDTH-1 downto PHASE_WIDTH-LUT_DEPTH);
+
+  sine   <= SINE_LUT(to_integer(addr));
+  cosine <= SINE_LUT(to_integer(addr + 2**(LUT_DEPTH-2)));
+end architecture;

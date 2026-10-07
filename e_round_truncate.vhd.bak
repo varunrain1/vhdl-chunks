@@ -1,0 +1,41 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity e_round_truncate is
+  generic (
+    IN_WIDTH   : positive := 24;
+    OUT_WIDTH  : positive := 16;
+    ROUND_MODE : string   := "ROUND_HALF_UP"
+  );
+  port (
+    din  : in  signed(IN_WIDTH-1 downto 0);
+    dout : out signed(OUT_WIDTH-1 downto 0)
+  );
+end entity;
+
+architecture rtl of e_round_truncate is
+  constant FRAC_BITS : integer := IN_WIDTH - OUT_WIDTH;
+begin
+  process(all)
+    variable truncated : signed(OUT_WIDTH-1 downto 0);
+    variable round_bit : std_logic;
+  begin
+    if FRAC_BITS <= 0 then
+      dout <= resize(din, OUT_WIDTH);
+    else
+      truncated := din(IN_WIDTH-1 downto FRAC_BITS);
+      round_bit := din(FRAC_BITS-1);
+
+      if ROUND_MODE = "TRUNCATE" then
+        dout <= truncated;
+      else
+        if round_bit = '1' then
+          dout <= truncated + 1;
+        else
+          dout <= truncated;
+        end if;
+      end if;
+    end if;
+  end process;
+end architecture;

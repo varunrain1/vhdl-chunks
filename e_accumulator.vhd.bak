@@ -1,0 +1,38 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity e_accumulator is
+  generic (
+    g_DATA_WIDTH : positive := 16;
+    g_ACC_WIDTH  : positive := 32
+  );
+  port (
+    i_clk    : in  std_logic;
+    i_rst    : in  std_logic;                     -- asynchronous reset
+    i_ce     : in  std_logic;
+    i_clear  : in  std_logic;
+    i_din    : in  signed(g_DATA_WIDTH-1 downto 0);
+    o_dout   : out signed(g_ACC_WIDTH-1 downto 0)
+  );
+end entity;
+
+architecture rtl of e_accumulator is
+  signal s_acc : signed(g_ACC_WIDTH-1 downto 0) := (others => '0');
+begin
+  process(i_clk, i_rst)
+  begin
+    if i_rst = '1' then
+      s_acc <= (others => '0');
+    elsif rising_edge(i_clk) then
+      if i_ce = '1' then
+        if i_clear = '1' then
+          s_acc <= resize(i_din, g_ACC_WIDTH);
+        else
+          s_acc <= s_acc + resize(din, g_ACC_WIDTH);
+        end if;
+      end if;
+    end if;
+  end process;
+  o_dout <= s_acc;
+end architecture;

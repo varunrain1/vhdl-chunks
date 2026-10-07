@@ -1,0 +1,79 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity e_rate_change is
+  generic (
+    DATA_WIDTH : positive := 16;
+    FACTOR     : positive := 4;
+    MODE       : string   := "DOWN"          -- "UP" or "DOWN"
+  );
+  port (
+    clk_in  : in  std_logic;
+    rst     : in  std_logic;                 -- asynchronous reset
+    ce_in   : in  std_logic;
+    din     : in  signed(DATA_WIDTH-1 downto 0);
+    clk_out : in  std_logic;
+    ce_out  : out std_logic;
+    dout    : out signed(DATA_WIDTH-1 downto 0)
+  );
+end entity;
+
+architecture rtl of e_rate_change is
+  signal cnt    : integer range 0 to FACTOR-1 := 0;
+  signal sample : signed(DATA_WIDTH-1 downto 0) := (others => '0');
+  signal ce_int : std_logic := '0';
+begin
+  gen_down : if MODE = "DOWN" generate
+    process(clk_in, rst)
+    begin
+      if rst = '1' then
+        cnt    <= 0;
+        ce_int <= '0';
+        sample <= (others => '0');
+      elsif rising_edge(clk_in) then
+        if ce_in = '1' then
+          if cnt = FACTOR-1 then
+            cnt    <= 0;
+            ce_int <= '1';
+            sample <= din;
+          else
+            cnt    <= cnt + 1;
+            ce_int <= '0';
+          end if;
+        else
+          ce_int <= '0';
+        end if;
+      end if;
+    end process;
+    dout   <= sample;
+    ce_out <= ce_int;
+  end generate;
+
+  gen_up : if MODE = "UP" generate
+    process(clk_in, rst)
+    begin
+      if rst = '1' then
+        cnt    <= 0;
+        sample <= (others => '0');
+        ce_int <= '0';
+      elsif rising_edge(clk_in) then
+        if ce_in = '1' then
+          sample <= din;
+          cnt    <= 0;
+          ce_int <= '1';
+        else
+          if cnt < FACTOR-1 then
+            cnt    <= cnt + 1;
+            ce_int <= '1';
+            sample <= (others => '0');   -- zero-stuffing
+          else
+            ce_int <= '0';
+          end if;
+        end if;
+      end if;
+    end process;
+    dout   <= sample;
+    ce_out <= ce_int;
+  end generate;
+end architecture;

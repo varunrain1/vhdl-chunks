@@ -1,0 +1,45 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity e_lut_rom is
+  generic (
+    g_ADDR_WIDTH : positive := 10;
+    g_DATA_WIDTH : positive := 16
+  );
+  port (
+    i_clk  : in  std_logic;
+    i_rst  : in  std_logic;                     -- asynchronous reset
+    i_en   : in  std_logic;
+    i_addr : in  std_logic_vector(g_ADDR_WIDTH-1 downto 0);
+    o_dout : out std_logic_vector(g_DATA_WIDTH-1 downto 0)
+  );
+end entity;
+
+architecture rtl of e_lut_rom is
+  type rom_t is array (0 to 2**g_ADDR_WIDTH-1) of std_logic_vector(g_DATA_WIDTH-1 downto 0);
+
+  function init_rom return rom_t is
+    variable r : rom_t := (others => (others => '0'));
+  begin
+    for i in 0 to 2**g_ADDR_WIDTH-1 loop
+      r(i) := std_logic_vector(to_unsigned(i mod 2**g_DATA_WIDTH, g_DATA_WIDTH));
+    end loop;
+    return r;
+  end function;
+
+  signal s_rom    : rom_t := init_rom;
+  signal s_dout : std_logic_vector(g_DATA_WIDTH-1 downto 0) := (others => '0');
+begin
+  process(i_clk, i_rst)
+  begin
+    if i_rst = '1' then
+      s_dout <= (others => '0');
+    elsif rising_edge(i_clk) then
+      if i_en = '1' then
+        s_dout <= s_rom(to_integer(unsigned(i_addr)));
+      end if;
+    end if;
+  end process;
+  o_dout <= s_dout;
+end architecture;
