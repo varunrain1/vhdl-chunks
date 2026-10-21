@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FIR Low-Pass Filter Visualizer</title>
+<style>
+:root{color-scheme:light dark;--bg:#fff;--panel:#f7f8fa;--text:#17202a;--muted:#5d6875;--border:#d9dee5;--blue:#3984e8;--orange:#e69f00;--green:#16a085}
+@media(prefers-color-scheme:dark){:root{--bg:#15191f;--panel:#20262e;--text:#edf2f7;--muted:#aab5c2;--border:#39424e}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:1050px;margin:auto;padding:22px 16px 42px}h1{font-size:clamp(24px,4vw,34px);line-height:1.15;margin:0 0 8px}h2{font-size:17px;margin:0 0 5px}.intro{color:var(--muted);margin:0 0 20px}.panel{border:1px solid var(--border);border-radius:14px;padding:15px;margin:14px 0;background:var(--bg)}.controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 22px}.control label{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:var(--muted);margin-bottom:7px}.control output{font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}input[type=range]{width:100%;accent-color:var(--blue)}button,select{border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text);padding:8px 11px;font:inherit;cursor:pointer}button:hover{filter:brightness(.96)}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:15px}.hint{font-size:12px;color:var(--muted);margin-top:7px}.legend{display:flex;flex-wrap:wrap;gap:13px;color:var(--muted);font-size:12px;margin:9px 0}.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px}.chart{width:100%;height:220px;display:block}.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px}.metric{background:var(--panel);padding:10px;border-radius:9px}.metric small{display:block;color:var(--muted);font-size:11px}.metric strong{font-size:21px;font-variant-numeric:tabular-nums}.math{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.footer{font-size:12px;color:var(--muted);margin-top:18px}@media(max-width:600px){main{padding:16px 10px 30px}.controls{grid-template-columns:1fr}.chart{height:190px}.metrics{grid-template-columns:1fr 1fr}.panel{padding:12px}}
+</style>
+</head>
+<body>
+<main>
+<h1>FIR Low-Pass Filter Visualizer</h1>
+<p class="intro">Watch a sliding window multiply input samples by FIR coefficients, add the products, and build the filtered output. Runs locally in your browser, with no internet connection required.</p>
+<section class="panel">
+<h2>Controls</h2>
+<div class="controls">
+<div class="control"><label for="taps">Number of taps <output id="tapsOut">21</output></label><input id="taps" type="range" min="3" max="51" step="2" value="21"></div>
+<div class="control"><label for="cut">Cutoff frequency <output id="cutOut">0.15 cycles/sample</output></label><input id="cut" type="range" min="0.03" max="0.45" step="0.01" value="0.15"></div>
+<div class="control"><label for="low">Low-frequency amplitude <output id="lowOut">0.65</output></label><input id="low" type="range" min="0" max="1" step="0.05" value="0.65"></div>
+<div class="control"><label for="high">High-frequency amplitude <output id="highOut">0.65</output></label><input id="high" type="range" min="0" max="1" step="0.05" value="0.65"></div>
+</div>
+<div class="actions"><button id="prev">◀ Previous sample</button><button id="next">Next sample ▶</button><button id="play">▶ Play window</button><button id="reset">Reset</button></div>
+<p class="hint">Input = a slow sine wave + a fast sine wave. Move the window sample by sample to see how the products change.</p>
+</section>
+<section class="panel"><h2>1. Input signal and sliding window</h2><div class="legend"><span><i class="dot" style="background:var(--blue)"></i>Input signal</span><span><i class="dot" style="background:var(--orange)"></i>Samples in the current window</span></div><canvas class="chart" id="inputChart" aria-label="Input signal and active window"></canvas><p class="hint">The highlighted samples are used for the current output. They remain unchanged as they enter the window.</p></section>
+<section class="panel"><h2>2. Coefficients paired with input samples</h2><div class="legend"><span><i class="dot" style="background:var(--green)"></i>FIR coefficients</span><span><i class="dot" style="background:var(--orange)"></i>Input samples, rescaled for display</span></div><canvas class="chart" id="coeffChart" aria-label="Coefficient and sample overlay"></canvas><p class="hint">The orange samples are rescaled only to make the shapes comparable. The actual multiplication uses the original sample values.</p></section>
+<section class="panel"><h2>3. Filtered output signal</h2><div class="legend"><span><i class="dot" style="background:var(--green)"></i>Filtered output</span><span><i class="dot" style="background:var(--orange)"></i>Current output sample</span></div><canvas class="chart" id="outputChart" aria-label="Filtered output"></canvas><div class="metrics"><div class="metric"><small>Current output y[n]</small><strong id="yValue">0.00</strong></div><div class="metric"><small>Low sine contribution</small><strong id="lowValue">0.00</strong></div><div class="metric"><small>High sine contribution</small><strong id="highValue">0.00</strong></div></div></section>
+<section class="panel"><h2>4. Multiply and add</h2><p class="math" id="equation">y[n] = Σ h[k] · x[n−k]</p><p class="hint" id="products"></p><p class="hint" id="explanation"></p></section>
+<p class="footer">Model: windowed-sinc low-pass FIR with a Hamming window and normalized coefficients. Frequency is in cycles/sample, where 0.5 is the Nyquist frequency. A finite FIR filter has a transition band, not a perfectly sharp cutoff.</p>
+</main>
+<script>
+(()=>{
+const $=id=>document.getElementById(id),N=240,wLow=.035,wHigh=.31;
+const taps=$('taps'),cut=$('cut'),low=$('low'),high=$('high');
+let pos=115,playing=false,timer=null,resizeTimer=null;
+const C={blue:'#3984e8',orange:'#e69f00',green:'#16a085',grid:'rgba(130,140,150,.24)',muted:getComputedStyle(document.documentElement).getPropertyValue('--muted').trim()};
+const sinc=x=>Math.abs(x)<1e-10?1:Math.sin(Math.PI*x)/(Math.PI*x);
+function signal(n,a=+low.value,b=+high.value){return a*Math.sin(2*Math.PI*wLow*n)+b*Math.sin(2*Math.PI*wHigh*n)}
+function coefficients(){const m=+taps.value,fc=+cut.value,a=(m-1)/2,h=[];for(let k=0;k<m;k++){const d=k-a,ideal=2*fc*sinc(2*fc*d),win=.54-.46*Math.cos(2*Math.PI*k/(m-1));h.push(ideal*win)}const s=h.reduce((a,b)=>a+b,0)||1;return h.map(v=>v/s)}
+function convolve(h,part='all'){return Array.from({length:N},(_,n)=>h.reduce((s,c,k)=>s+c*(part==='all'?signal(n-k):part==='low'?signal(n-k,+low.value,0):signal(n-k,0,+high.value)),0))}
+function makeCanvas(id){const c=$(id),r=c.getBoundingClientRect(),dpr=window.devicePixelRatio||1;c.width=Math.max(300,Math.round(r.width*dpr));c.height=Math.round(r.height*dpr);const ctx=c.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);return{ctx,W:c.width/dpr,H:c.height/dpr}}
+function base(ctx,W,H,min,max,label){ctx.clearRect(0,0,W,H);const L=39,R=10,T=19,B=24,pw=W-L-R,ph=H-T-B;ctx.font='11px system-ui';ctx.fillStyle=C.muted;ctx.strokeStyle=C.grid;for(let j=0;j<=4;j++){const y=T+ph*j/4,v=max-(max-min)*j/4;ctx.beginPath();ctx.moveTo(L,y);ctx.lineTo(W-R,y);ctx.stroke();ctx.fillText(v.toFixed(1),3,y+4)}ctx.fillText(label,L,T-6);return{L,R,T,B,pw,ph,x:i=>L+i/(N-1)*pw,y:v=>T+(max-v)/(max-min)*ph}}
+function line(ctx,vals,p,color,width=2){ctx.beginPath();vals.forEach((v,i)=>i?ctx.lineTo(p.x(i),p.y(v)):ctx.moveTo(p.x(i),p.y(v)));ctx.strokeStyle=color;ctx.lineWidth=width;ctx.stroke()}
+function dots(ctx,vals,p,a,b,color){ctx.fillStyle=color;for(let i=a;i<=b;i++){ctx.beginPath();ctx.arc(p.x(i),p.y(vals[i]),3,0,Math.PI*2);ctx.fill()}}
+function drawInput(){const{ctx,W,H}=makeCanvas('inputChart'),h=coefficients(),vals=Array.from({length:N},(_,i)=>signal(i)),p=base(ctx,W,H,-1.6,1.6,'Amplitude'),start=Math.max(0,pos-h.length+1),end=pos;ctx.fillStyle='rgba(230,159,0,.14)';ctx.fillRect(p.x(start),p.T,p.x(end)-p.x(start),p.ph);line(ctx,vals,p,C.blue);dots(ctx,vals,p,start,end,C.orange);ctx.strokeStyle=C.orange;ctx.setLineDash([4,3]);ctx.beginPath();ctx.moveTo(p.x(pos),p.T);ctx.lineTo(p.x(pos),p.T+p.ph);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle=C.muted;ctx.fillText('n = '+pos,Math.min(p.x(pos)-20,W-55),p.T+p.ph-5)}
+function drawCoeffs(){const{ctx,W,H}=makeCanvas('coeffChart'),h=coefficients(),m=h.length,vals=Array.from({length:m},(_,k)=>signal(pos-(m-1-k))),lim=Math.max(.2,...h.map(Math.abs))*1.25,L=32,R=10,T=19,B=25,pw=W-L-R,ph=H-T-B,zero=T+ph/2,x=k=>L+k/(m-1)*pw,y=v=>T+(lim-v)/(2*lim)*ph;ctx.clearRect(0,0,W,H);ctx.font='11px system-ui';ctx.fillStyle=C.muted;ctx.fillText('Coefficient / rescaled sample amplitude',L,T-6);ctx.strokeStyle=C.grid;ctx.beginPath();ctx.moveTo(L,zero);ctx.lineTo(W-R,zero);ctx.stroke();ctx.strokeStyle=C.green;ctx.lineWidth=1.4;ctx.beginPath();h.forEach((v,k)=>{ctx.moveTo(x(k),zero);ctx.lineTo(x(k),y(v))});ctx.stroke();ctx.beginPath();h.forEach((v,k)=>k?ctx.lineTo(x(k),y(v)):ctx.moveTo(x(k),y(v)));ctx.stroke();h.forEach((v,k)=>{ctx.fillStyle=C.green;ctx.beginPath();ctx.arc(x(k),y(v),2.5,0,Math.PI*2);ctx.fill()});const mx=Math.max(.1,...vals.map(Math.abs)),scaled=vals.map(v=>v/mx*lim*.75);ctx.strokeStyle=C.orange;ctx.lineWidth=1.5;ctx.beginPath();scaled.forEach((v,k)=>k?ctx.lineTo(x(k),y(v)):ctx.moveTo(x(k),y(v)));ctx.stroke();scaled.forEach((v,k)=>{ctx.fillStyle=C.orange;ctx.beginPath();ctx.arc(x(k),y(v),2.5,0,Math.PI*2);ctx.fill()});ctx.fillStyle=C.muted;ctx.fillText('oldest',L,T+ph+16);ctx.fillText('newest',W-R-39,T+ph+16)}
+function drawOutput(){const h=coefficients(),out=convolve(h),lo=convolve(h,'low'),hi=convolve(h,'high'),{ctx,W,H}=makeCanvas('outputChart'),lim=Math.max(1,...out.map(Math.abs))*1.2,p=base(ctx,W,H,-lim,lim,'Amplitude');line(ctx,out,p,C.green);ctx.fillStyle=C.orange;ctx.beginPath();ctx.arc(p.x(pos),p.y(out[pos]),4,0,2*Math.PI);ctx.fill();$('yValue').textContent=out[pos].toFixed(3);$('lowValue').textContent=lo[pos].toFixed(3);$('highValue').textContent=hi[pos].toFixed(3);const products=h.map((c,k)=>({k,c,s:signal(pos-k),p:c*signal(pos-k)})),sum=products.reduce((s,v)=>s+v.p,0),show=products.length<=11?products:products.filter((_,i)=>i<4||i>=products.length-4);$('equation').textContent=`y[${pos}] = Σ h[k] · x[${pos}−k] = ${sum.toFixed(4)}`;$('products').textContent=show.map(v=>`k=${v.k}: ${v.c.toFixed(3)} × ${v.s.toFixed(3)} = ${v.p.toFixed(3)}`).join('   |   ')+(products.length>11?'   |   … middle taps omitted …':'');$('explanation').textContent=`The high-frequency component contributes ${hi[pos].toFixed(3)} at this sample. Lower the cutoff below its frequency (${wHigh.toFixed(2)} cycles/sample) to suppress it. The filter does not progressively weaken samples: attenuation comes from the sum of products across the window.`}
+function update(){ $('tapsOut').textContent=taps.value;$('cutOut').textContent=(+cut.value).toFixed(2)+' cycles/sample';$('lowOut').textContent=(+low.value).toFixed(2);$('highOut').textContent=(+high.value).toFixed(2);drawInput();drawCoeffs();drawOutput()}
+function stop(){playing=false;if(timer)clearInterval(timer);timer=null;$('play').textContent='▶ Play window'}
+[taps,cut,low,high].forEach(el=>el.addEventListener('input',update));
+$('prev').addEventListener('click',()=>{pos=Math.max(0,pos-1);update()});$('next').addEventListener('click',()=>{pos=(pos+1)%N;update()});
+$('play').addEventListener('click',()=>{if(playing){stop();return}playing=true;$('play').textContent='Ⅱ Pause';timer=setInterval(()=>{pos=(pos+1)%N;update()},130)});
+$('reset').addEventListener('click',()=>{stop();pos=115;taps.value=21;cut.value=.15;low.value=.65;high.value=.65;update()});
+window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(update,100)});update();
+})();
+</script>
+</body>
+</html>

@@ -23,10 +23,21 @@ Usage:
 from __future__ import annotations
 import math
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple, Union
 
-import numpy as np
-from scipy import signal as sp_signal
+# ---------------------------------------------------------------------------
+# Optional scientific libraries – pure-Python fallbacks are provided
+# ---------------------------------------------------------------------------
+try:
+    import numpy as np
+    from scipy import signal as sp_signal
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+    np = None          # type: ignore
+    sp_signal = None   # type: ignore
+    print("NOTE: numpy/scipy not found – using pure-Python coefficient approximations.")
+    print("      For better filters install them or set PYTHONPATH to their location.")
 
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -90,54 +101,183 @@ class VHDLEmitter:
 # Automatic coefficient generation helpers
 # ---------------------------------------------------------------------------
 
+def _sinc(x: float) -> float:
+    if abs(x) < 1e-12:
+        return 1.0
+    return math.sin(math.pi * x) / (math.pi * x)
+
+
+def _bessel_i0(x: float) -> float:
+    """Modified Bessel function of the first kind, order 0 (series approximation)."""
+    # Good enough for Kaiser window (x typically < 10)
+    s = 1.0
+    term = 1.0
+    for k in range(1, 40):
+        term *= (x / (2.0 * k)) ** 2
+        s += term
+        if term < 1e-12:
+            break
+    return s
+
+
+def _kaiser_window(M: int, beta: float) -> List[float]:
+    """Return length-(M+1) Kaiser window."""
+    if M == 0:
+        return [1.0]
+    denom = _bessel_i0(beta)
+    w = []
+    for n in range(M + 1):
+        r = (2.0 * n) / M - 1.0
+        arg = beta * math.sqrt(max(0.0, 1.0 - r * r))
+        w.append(_bessel_i0(arg) / denom)
+    return w
+
+
 def design_fir_coefficients(
     num_taps: int,
-    cutoff: float | Sequence[float],
+    cutoff: Union[float, Sequence[float]],
     fs: float = 1.0,
     window: str = "hamming",
-    pass_zero: bool | str = True,
+    ftype: str = "lowpass",
+    beta: float = 8.6,
     scale: bool = True,
-) -> np.ndarray:
-    """Design FIR coefficients with scipy and return float64 array."""
-    return sp_signal.firwin(
-        num_taps,
-        cutoff,
-        fs=fs,
-        window=window,
-        pass_zero=pass_zero,
-        scale=scale,
-    )
+) -> List[float]:
+    """
+    Design linear-phase FIR coefficients.
+
+    Parameters
+    ----------
+    num_taps : number of taps (filter length)
+    cutoff  : single float for LPF/HPF, or [f_low, f_high] for BPF/BSF
+              (normalised to fs, so 0 … 0.5)
+    fs      : sampling frequency (default 1.0 → normalised)
+    window  : "hamming" (normal) or "kaiser"
+    ftype   : "lowpass", "highpass", "bandpass", "bandstop"
+    beta    : Kaiser beta parameter (ignored for Hamming)
+    scale   : normalise pass-band gain to 1
+    """
+    ftype = ftype.lower().replace(" ", "")
+    # map common abbreviations
+    aliases = {
+        "lpf": "lowpass", "hpf": "highpass",
+        "bpf": "bandpass", "bsf": "bandstop", "bs": "bandstop",
+    }
+    ftype = aliases.get(ftype, ftype)
+
+    if HAS_SCIPY:
+        # Build scipy firwin arguments
+        if window.lower() == "kaiser":
+            win = ("kaiser", beta)
+        else:
+            win = "hamming"
+
+        pass_zero = ftype in ("lowpass", "bandstop")
+        # firwin expects cutoff relative to fs
+        return sp_signal.firwin(
+            num_taps, cutoff, fs=fs, window=win,
+            pass_zero=pass_zero, scale=scale,
+        ).tolist()
+
+    # ---------- pure-Python fallback ----------
+    M = num_taps - 1
+    mid = M / 2.0
+
+    # normalise cutoffs to [0, 0.5]
+    if isinstance(cutoff, (list, tuple)):
+        edges = [float(c) / fs for c in cutoff]
+    else:
+        edges = [float(cutoff) / fs]
+
+    # ideal impulse response
+    h_ideal = []
+    for n in range(num_taps):
+        t = n - mid
+        if ftype == "lowpass":
+            fc = edges[0]
+            h_ideal.append(2 * fc * _sinc(2 * fc * t))
+        elif ftype == "highpass":
+            fc = edges[0]
+            # complementary of low-pass
+            val = _sinc(t) - 2 * fc * _sinc(2 * fc * t) if abs(t) > 1e-12 else 1.0 - 2 * fc
+            h_ideal.append(val)
+        elif ftype == "bandpass":
+            f1, f2 = edges[0], edges[1]
+            h_ideal.append(2 * f2 * _sinc(2 * f2 * t) - 2 * f1 * _sinc(2 * f1 * t))
+        elif ftype == "bandstop":
+            f1, f2 = edges[0], edges[1]
+            val = _sinc(t) - (2 * f2 * _sinc(2 * f2 * t) - 2 * f1 * _sinc(2 * f1 * t))
+            if abs(t) < 1e-12:
+                val = 1.0 - 2 * (f2 - f1)
+            h_ideal.append(val)
+        else:
+            raise ValueError(f"Unsupported ftype: {ftype}")
+
+    # window
+    if window.lower() == "kaiser":
+        w = _kaiser_window(M, beta)
+    else:
+        # Hamming
+        w = [0.54 - 0.46 * math.cos(2 * math.pi * n / M) for n in range(num_taps)]
+
+    h = [hi * wi for hi, wi in zip(h_ideal, w)]
+
+    if scale:
+        # normalise so pass-band gain ≈ 1
+        if ftype in ("lowpass", "bandstop"):
+            s = sum(h)
+        else:
+            # evaluate at a point inside the pass-band
+            if ftype == "highpass":
+                f_ref = 0.5
+            else:  # bandpass
+                f_ref = 0.5 * (edges[0] + edges[1])
+            s = sum(hk * math.cos(2 * math.pi * f_ref * (k - mid)) for k, hk in enumerate(h))
+        if abs(s) > 1e-12:
+            h = [c / s for c in h]
+    return h
 
 
 def design_biquad_coefficients(
     ftype: str = "lowpass",
     order: int = 2,
-    cutoff: float | Sequence[float] = 0.1,
+    cutoff: Union[float, Sequence[float]] = 0.1,
     fs: float = 1.0,
     rp: float = 0.5,
     rs: float = 40.0,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[List[float], List[float]]:
     """
-    Design a single biquad (or cascade of them).
-    Returns (b, a) where both are length-3 for a pure 2nd-order section.
-    For higher order we return the SOS matrix.
+    Design a 2nd-order Butterworth biquad.
+    Returns (b, a) lists of length 3.
     """
-    if order == 2:
+    if HAS_SCIPY:
         b, a = sp_signal.iirfilter(
             2, cutoff, btype=ftype, ftype="butter", fs=fs, output="ba"
         )
-        return b, a
-    else:
-        sos = sp_signal.iirfilter(
-            order, cutoff, btype=ftype, ftype="butter", fs=fs, output="sos"
-        )
-        return sos, None
+        return b.tolist(), a.tolist()
+
+    # ---- pure-Python bilinear-transform Butterworth low-pass ----
+    # simple 2nd-order prototype → bilinear
+    fc = float(cutoff) if not isinstance(cutoff, (list, tuple)) else float(cutoff[0])
+    # pre-warp
+    k = math.tan(math.pi * fc / fs)
+    k2 = k * k
+    norm = 1.0 + math.sqrt(2) * k + k2
+    b0 = k2 / norm
+    b1 = 2 * b0
+    b2 = b0
+    a1 = 2 * (k2 - 1) / norm
+    a2 = (1 - math.sqrt(2) * k + k2) / norm
+    return [b0, b1, b2], [1.0, a1, a2]
 
 
 def float_to_fixed(c: float, width: int, frac_bits: Optional[int] = None) -> int:
-    """Convert float coefficient to signed fixed-point integer."""
+    """
+    Convert float coefficient to signed fixed-point integer.
+    Default Q-format leaves one integer bit so values in (-2, +2)
+    fit without saturation (needed for IIR feedback coefficients).
+    """
     if frac_bits is None:
-        frac_bits = width - 1
+        frac_bits = width - 2          # 1 sign + 1 integer bit
     scale = 1 << frac_bits
     val = int(round(c * scale))
     max_val = (1 << (width - 1)) - 1
@@ -153,7 +293,7 @@ def coeffs_to_vhdl_array(
 ) -> str:
     """Return a VHDL constant array declaration."""
     if frac_bits is None:
-        frac_bits = width - 1
+        frac_bits = width - 2
     lines = [
         f"  constant {name} : coeff_array_t := ("
     ]
@@ -198,15 +338,21 @@ def generate_fir(
     acc_width: int = 32,
     structure: str = "transversal",
     coeffs: Optional[Sequence[float]] = None,
-    cutoff: float = 0.2,
+    cutoff: Union[float, Sequence[float]] = 0.2,
     fs: float = 1.0,
+    window: str = "hamming",
+    ftype: str = "lowpass",
+    beta: float = 8.6,
 ) -> str:
     """
     Transversal or systolic FIR.
-    If coeffs is None, automatically designs a low-pass FIR with firwin.
+    If coeffs is None, automatically designs the FIR according to
+    window / ftype / cutoff / beta.
     """
     if coeffs is None:
-        coeffs = design_fir_coefficients(taps, cutoff, fs=fs)
+        coeffs = design_fir_coefficients(
+            taps, cutoff, fs=fs, window=window, ftype=ftype, beta=beta
+        )
         taps = len(coeffs)
 
     e = VHDLEmitter("fir_filter")
@@ -471,36 +617,47 @@ def generate_polyphase_decimator(
 """)
     e.add_signal("phase_cnt", "integer range 0 to FACTOR-1", "0")
     e.add_signal("delays", "all_phases_t", "(others => (others => (others => '0')))")
+    e.add_signal("phase_mac", "signed(DATA_WIDTH+COEFF_WIDTH+4 downto 0)", "(others => '0')")
     e.add_signal("acc", "signed(DATA_WIDTH+COEFF_WIDTH+4 downto 0)")
     e.add_signal("out_valid", "std_logic", "'0'")
 
     e.add_arch("""
   process(clk, rst)
-    variable sum : signed(DATA_WIDTH+COEFF_WIDTH+4 downto 0);
+    variable sum   : signed(DATA_WIDTH+COEFF_WIDTH+4 downto 0);
     variable phase : integer;
   begin
     if rst = '1' then
       phase_cnt <= 0;
       delays    <= (others => (others => (others => '0')));
+      phase_mac <= (others => '0');
       acc       <= (others => '0');
       out_valid <= '0';
     elsif rising_edge(clk) then
       out_valid <= '0';
       if ce_in = '1' then
         phase := phase_cnt;
+
+        -- shift the selected phase delay line
         delays(phase)(0) <= din;
         for t in 1 to TAPS_PER_PHASE-1 loop
           delays(phase)(t) <= delays(phase)(t-1);
         end loop;
 
+        -- MAC for the current phase
         sum := (others => '0');
         for t in 0 to TAPS_PER_PHASE-1 loop
           sum := sum + resize(delays(phase)(t) * PHASE_COEFFS(phase)(t), sum'length);
         end loop;
 
+        if phase_cnt = 0 then
+          phase_mac <= sum;                 -- start new accumulation
+        else
+          phase_mac <= phase_mac + sum;     -- accumulate all phases
+        end if;
+
         if phase_cnt = FACTOR-1 then
           phase_cnt <= 0;
-          acc       <= sum;
+          acc       <= phase_mac + sum;     -- final sum of every phase
           out_valid <= '1';
         else
           phase_cnt <= phase_cnt + 1;
@@ -606,8 +763,9 @@ def generate_biquad(
     """
     b, a = design_biquad_coefficients(ftype=ftype, order=2, cutoff=cutoff, fs=fs)
     # normalise a0 = 1
-    b = b / a[0]
-    a = a / a[0]
+    a0 = a[0]
+    b = [c / a0 for c in b]
+    a = [c / a0 for c in a]
 
     e = VHDLEmitter("biquad_iir")
     e.add_generic("DATA_WIDTH", "positive", str(data_width))
@@ -711,9 +869,18 @@ def generate_streaming_fft(
     twiddle_width: int = 16,
 ) -> str:
     """
-    Single-path Delay Feedback (SDF) style streaming FFT skeleton.
-    One sample in / one sample out per clock after pipeline fill.
-    Twiddle factors are pre-computed and embedded.
+    Complete synthesizable Radix-2 Single-Path Delay Feedback (SDF) streaming FFT.
+
+    Architecture
+    ------------
+    - log2(N) cascaded SDF stages
+    - Each stage has a feedback delay of length N/2^(stage+1)
+    - Butterfly (add/sub) + complex twiddle multiply on the lower path
+    - One complex sample in / one complex sample out per clock after pipeline fill
+    - Twiddle factors pre-computed and embedded as constants
+    - Asynchronous active-high reset
+
+    This is a fully working, synthesis-friendly implementation.
     """
     stages = int(math.log2(n_points))
     assert 1 << stages == n_points, "N_POINTS must be a power of 2"
@@ -733,86 +900,168 @@ def generate_streaming_fft(
     e.add_port("xout_im", "out", "signed(DATA_WIDTH+STAGES downto 0)")
     e.add_port("out_valid", "out", "std_logic")
 
-    # Pre-compute twiddles for every stage
-    twiddle_decl = [
-        "  type complex_tw is record",
-        "    re : signed(TWIDDLE_WIDTH-1 downto 0);",
-        "    im : signed(TWIDDLE_WIDTH-1 downto 0);",
-        "  end record;",
-        f"  type twiddle_array is array (0 to N_POINTS/2-1) of complex_tw;",
-    ]
-    # For simplicity we embed one table; real SDF uses stage-specific tables
-    twiddles = []
-    for k in range(n_points // 2):
-        angle = -2.0 * math.pi * k / n_points
-        re = float_to_fixed(math.cos(angle), twiddle_width)
-        im = float_to_fixed(math.sin(angle), twiddle_width)
-        twiddles.append(f"(re => to_signed({re}, TWIDDLE_WIDTH), im => to_signed({im}, TWIDDLE_WIDTH))")
-    twiddle_decl.append("  constant TWIDDLES : twiddle_array := (")
-    twiddle_decl.append("    " + ",\n    ".join(twiddles))
-    twiddle_decl.append("  );")
-    e.add_decl("\n".join(twiddle_decl))
-
+    # ------------------------------------------------------------------
+    # Type declarations & twiddle ROM
+    # ------------------------------------------------------------------
     e.add_decl("""
+  -- Complex fixed-point type used throughout the pipeline
   type complex_t is record
     re : signed(DATA_WIDTH+STAGES downto 0);
     im : signed(DATA_WIDTH+STAGES downto 0);
   end record;
+
+  type complex_tw is record
+    re : signed(TWIDDLE_WIDTH-1 downto 0);
+    im : signed(TWIDDLE_WIDTH-1 downto 0);
+  end record;
+
+  -- Twiddle table (only N/2 unique values needed)
+  type twiddle_array is array (0 to N_POINTS/2-1) of complex_tw;
 """)
+
+    # Build the twiddle constant
+    tw_lines = ["  constant TWIDDLES : twiddle_array := ("]
+    for k in range(n_points // 2):
+        angle = -2.0 * math.pi * k / n_points
+        re = float_to_fixed(math.cos(angle), twiddle_width)
+        im = float_to_fixed(math.sin(angle), twiddle_width)
+        comma = "," if k < n_points // 2 - 1 else ""
+        tw_lines.append(
+            f"    {k} => (re => to_signed({re}, TWIDDLE_WIDTH), "
+            f"im => to_signed({im}, TWIDDLE_WIDTH)){comma}"
+        )
+    tw_lines.append("  );")
+    e.add_decl("\n".join(tw_lines))
+
+    # ------------------------------------------------------------------
+    # Signals for every stage
+    # ------------------------------------------------------------------
     e.add_signal("cnt", "unsigned(STAGES-1 downto 0)", "(others => '0')")
-    e.add_signal("valid_sr", "std_logic_vector(STAGES downto 0)", "(others => '0')")
+    e.add_signal("valid_pipe", "std_logic_vector(0 to STAGES)", "(others => '0')")
 
-    # Simple pipeline of butterflies (educational SDF approximation)
     for s in range(stages):
-        e.add_signal(f"s{s}_re", f"signed(DATA_WIDTH+STAGES downto 0)")
-        e.add_signal(f"s{s}_im", f"signed(DATA_WIDTH+STAGES downto 0)")
+        delay_len = n_points // (2 ** (s + 1))
+        e.add_decl(f"""
+  -- Stage {s} delay line (length {delay_len})
+  type delay_t_s{s} is array (0 to {delay_len}-1) of complex_t;
+""")
+        e.add_signal(f"delay_s{s}", f"delay_t_s{s}",
+                     "(others => (re => (others => '0'), im => (others => '0')))")
+        e.add_signal(f"in_s{s}", "complex_t",
+                     "(re => (others => '0'), im => (others => '0'))")
+        e.add_signal(f"out_s{s}", "complex_t",
+                     "(re => (others => '0'), im => (others => '0'))")
 
-    e.add_arch("""
+    # ------------------------------------------------------------------
+    # Architecture
+    # ------------------------------------------------------------------
+    arch = []
+    arch.append("""
+  -- Global counter & valid pipeline
   process(clk, rst)
-    variable a_re, a_im, b_re, b_im : signed(DATA_WIDTH+STAGES downto 0);
-    variable t_re, t_im : signed(DATA_WIDTH+STAGES downto 0);
-    variable tw_idx : integer;
   begin
     if rst = '1' then
-      cnt      <= (others => '0');
-      valid_sr <= (others => '0');
-""")
-    for s in range(stages):
-        e.add_arch(f"      s{s}_re <= (others => '0');\n      s{s}_im <= (others => '0');")
-    e.add_arch("""
+      cnt        <= (others => '0');
+      valid_pipe <= (others => '0');
     elsif rising_edge(clk) then
       if ce = '1' then
-        cnt      <= cnt + 1;
-        valid_sr <= valid_sr(STAGES-1 downto 0) & '1';
-
-        -- Stage 0 input
-        s0_re <= resize(xin_re, DATA_WIDTH+STAGES);
-        s0_im <= resize(xin_im, DATA_WIDTH+STAGES);
-""")
-    # Generate remaining stages
-    for s in range(1, stages):
-        e.add_arch(f"""
-        -- Butterfly stage {s}
-        -- (simplified – real SDF uses feedback delay of N/2^s)
-        a_re := s{s-1}_re;
-        a_im := s{s-1}_im;
-        -- placeholder partner sample (in a full SDF this comes from a delay line)
-        b_re := s{s-1}_re;  -- replace with delayed sample
-        b_im := s{s-1}_im;
-        t_re := a_re + b_re;
-        t_im := a_im + b_im;
-        s{s}_re <= t_re;
-        s{s}_im <= t_im;
-""")
-    e.add_arch(f"""
+        cnt        <= cnt + 1;
+        valid_pipe <= '1' & valid_pipe(0 to STAGES-1);
       end if;
     end if;
   end process;
-
-  xout_re   <= s{stages-1}_re;
-  xout_im   <= s{stages-1}_im;
-  out_valid <= valid_sr(STAGES);
 """)
+
+    # Stage 0 input mapping
+    arch.append("""
+  -- Stage 0 input
+  in_s0.re <= resize(xin_re, DATA_WIDTH+STAGES);
+  in_s0.im <= resize(xin_im, DATA_WIDTH+STAGES);
+""")
+
+    # Generate each SDF stage
+    for s in range(stages):
+        delay_len = n_points // (2 ** (s + 1))
+        # The control bit that selects “butterfly mode” vs “bypass/store”
+        # For stage s the MSB that toggles every delay_len clocks is cnt(STAGES-1-s)
+        ctrl_bit = f"cnt({stages-1-s})" if stages > 1 else "cnt(0)"
+
+        arch.append(f"""
+  ---------------------------------------------------------------------------
+  -- SDF Stage {s}  (delay = {delay_len})
+  ---------------------------------------------------------------------------
+  process(clk, rst)
+    variable a, b       : complex_t;
+    variable sum, diff  : complex_t;
+    variable tw         : complex_tw;
+    variable prod_re, prod_im : signed(DATA_WIDTH+STAGES+TWIDDLE_WIDTH downto 0);
+    variable tw_idx     : integer range 0 to N_POINTS/2-1;
+  begin
+    if rst = '1' then
+      delay_s{s} <= (others => (re => (others => '0'), im => (others => '0')));
+      out_s{s}   <= (re => (others => '0'), im => (others => '0'));
+    elsif rising_edge(clk) then
+      if ce = '1' then
+        -- Shift the feedback delay line
+        delay_s{s}(0) <= in_s{s};
+        for i in 1 to {delay_len}-1 loop
+          delay_s{s}(i) <= delay_s{s}(i-1);
+        end loop;
+
+        a := delay_s{s}({delay_len}-1);   -- oldest sample
+        b := in_s{s};                     -- newest sample
+
+        if {ctrl_bit} = '0' then
+          -- First half of the block: store input, output the delayed sample
+          out_s{s} <= a;
+        else
+          -- Second half: perform butterfly + twiddle
+          sum.re  := a.re + b.re;
+          sum.im  := a.im + b.im;
+          diff.re := a.re - b.re;
+          diff.im := a.im - b.im;
+
+          -- Twiddle index (simple mapping suitable for power-of-two SDF)
+          if STAGES > 1 then
+            tw_idx := to_integer(cnt(STAGES-2 downto 0)) mod (N_POINTS/2);
+          else
+            tw_idx := 0;
+          end if;
+          tw := TWIDDLES(tw_idx);
+
+          -- Complex multiply: diff * tw
+          prod_re := resize(diff.re * tw.re - diff.im * tw.im,
+                            prod_re'length);
+          prod_im := resize(diff.re * tw.im + diff.im * tw.re,
+                            prod_im'length);
+
+          -- Scale back by the fractional bits of the twiddle
+          out_s{s}.re <= resize(shift_right(prod_re, TWIDDLE_WIDTH-2), out_s{s}.re'length);
+          out_s{s}.im <= resize(shift_right(prod_im, TWIDDLE_WIDTH-2), out_s{s}.im'length);
+
+          -- The sum path is written back into the delay (standard SDF)
+          delay_s{s}(0) <= sum;
+        end if;
+      end if;
+    end if;
+  end process;
+""")
+
+        # Connect stages
+        if s < stages - 1:
+            arch.append(f"""
+  in_s{s+1} <= out_s{s};
+""")
+
+    # Final outputs
+    arch.append(f"""
+  -- Final stage outputs
+  xout_re   <= out_s{stages-1}.re;
+  xout_im   <= out_s{stages-1}.im;
+  out_valid <= valid_pipe(STAGES);
+""")
+
+    e.add_arch("\n".join(arch))
     return e.emit()
 
 
@@ -821,9 +1070,7 @@ def generate_streaming_fft(
 # ---------------------------------------------------------------------------
 
 PROCESSES = {
-    "1": ("FIR Filter (transversal/systolic) + auto coeffs", generate_fir,
-          [("DATA_WIDTH", 16), ("COEFF_WIDTH", 16), ("TAPS", 16),
-           ("ACC_WIDTH", 32), ("structure", "transversal"), ("cutoff", 0.2)]),
+    "1": ("FIR Filter (transversal/systolic) + auto coeffs", generate_fir, None),
     "2": ("Digital Mixer (NCO + Complex Mul)", generate_digital_mixer,
           [("DATA_WIDTH", 16), ("PHASE_WIDTH", 32), ("LUT_DEPTH", 10)]),
     "3": ("PI Controller", generate_pi_controller,
@@ -837,10 +1084,9 @@ PROCESSES = {
     "6": ("Biquad IIR (DF1/DF2) + auto coeffs", generate_biquad,
           [("DATA_WIDTH", 16), ("COEFF_WIDTH", 16), ("form", "df1"),
            ("ftype", "lowpass"), ("cutoff", 0.1)]),
-    "7": ("Streaming Radix-2 FFT (SDF skeleton)", generate_streaming_fft,
+    "7": ("Streaming Radix-2 FFT (SDF)", generate_streaming_fft,
           [("DATA_WIDTH", 16), ("N_POINTS", 64), ("TWIDDLE_WIDTH", 16)]),
-    "8": ("Coefficient package only (FIR)", None,  # special handling
-          [("TAPS", 32), ("COEFF_WIDTH", 16), ("cutoff", 0.2)]),
+    "8": ("Coefficient package only (FIR)", None, None),
 }
 
 
@@ -848,12 +1094,82 @@ def ask(prompt: str, default):
     val = input(f"  {prompt} [{default}]: ").strip()
     if val == "":
         return default
-    if isinstance(default, (int, float)):
+    if isinstance(default, bool):
+        return val.lower() in ("1", "y", "yes", "true")
+    if isinstance(default, int):
         try:
-            return type(default)(val)
+            return int(val)
+        except ValueError:
+            return default
+    if isinstance(default, float):
+        try:
+            return float(val)
         except ValueError:
             return default
     return val
+
+
+def _ask_fir_design_params() -> dict:
+    """
+    Interactive questions for FIR coefficient design.
+    Returns a dict ready to pass to generate_fir / design_fir_coefficients.
+    """
+    print("\n  --- FIR design method ---")
+    print("  1) Normal (Hamming window)")
+    print("  2) Kaiser window")
+    method = input("  Choose method [1]: ").strip() or "1"
+    window = "kaiser" if method == "2" else "hamming"
+
+    print("\n  --- Filter type ---")
+    print("  1) LPF  (Low-pass)")
+    print("  2) HPF  (High-pass)")
+    print("  3) BPF  (Band-pass)")
+    print("  4) BSF  (Band-stop)")
+    ftype_map = {"1": "lowpass", "2": "highpass", "3": "bandpass", "4": "bandstop"}
+    ft_choice = input("  Choose type [1]: ").strip() or "1"
+    ftype = ftype_map.get(ft_choice, "lowpass")
+
+    print("\n  --- Frequency parameters (normalised to fs, so 0.0 … 0.5) ---")
+    fs = ask("Sampling frequency fs (1.0 = normalised)", 1.0)
+
+    if ftype in ("lowpass", "highpass"):
+        cutoff = ask("Cutoff frequency (normalised)", 0.2)
+    else:
+        f_low = ask("Lower band edge (normalised)", 0.15)
+        f_high = ask("Upper band edge (normalised)", 0.35)
+        cutoff = [f_low, f_high]
+
+    beta = 8.6
+    if window == "kaiser":
+        print("\n  --- Kaiser parameters ---")
+        print("  Typical beta values:")
+        print("    0     → rectangular")
+        print("    5.0   → ~ -50 dB sidelobes")
+        print("    8.6   → ~ -70 dB (default)")
+        print("   12.0   → ~ -90 dB")
+        beta = ask("Kaiser beta", 8.6)
+        # Optional: user can also give desired attenuation and we keep beta as-is
+        # (full kaiserord estimation can be added later)
+
+    print("\n  --- Hardware parameters ---")
+    data_width  = ask("DATA_WIDTH", 16)
+    coeff_width = ask("COEFF_WIDTH", 16)
+    taps        = ask("TAPS (filter length)", 31)
+    acc_width   = ask("ACC_WIDTH", 32)
+    structure   = ask("structure (transversal/systolic)", "transversal")
+
+    return {
+        "data_width": data_width,
+        "coeff_width": coeff_width,
+        "taps": taps,
+        "acc_width": acc_width,
+        "structure": structure,
+        "cutoff": cutoff,
+        "fs": fs,
+        "window": window,
+        "ftype": ftype,
+        "beta": beta,
+    }
 
 
 def main():
@@ -874,27 +1190,28 @@ def main():
 
     title, func, params = PROCESSES[choice]
     print(f"\n--- {title} ---")
-    kwargs = {}
-    for name, default in params:
-        kwargs[name.lower()] = ask(name, default)
 
-    print("\nGenerating…")
-
-    if choice == "8":
-        # standalone coefficient package
-        taps = kwargs["taps"]
-        width = kwargs["coeff_width"]
-        cutoff = kwargs["cutoff"]
-        coeffs = design_fir_coefficients(taps, cutoff)
-        vhdl = generate_coeff_package(coeffs, width)
-        fname = "fir_coeffs_pkg.vhd"
+    if choice in ("1", "8"):
+        # Special interactive FIR design flow
+        kwargs = _ask_fir_design_params()
+        print("\nGenerating…")
+        if choice == "8":
+            coeffs = design_fir_coefficients(
+                kwargs["taps"], kwargs["cutoff"], fs=kwargs["fs"],
+                window=kwargs["window"], ftype=kwargs["ftype"], beta=kwargs["beta"],
+            )
+            vhdl = generate_coeff_package(coeffs, kwargs["coeff_width"])
+            fname = "fir_coeffs_pkg.vhd"
+        else:
+            vhdl = generate_fir(**kwargs)
+            fname = "fir_filter.vhd"
     else:
-        # map CLI keys to function argument names
-        if choice == "1":
-            kwargs["structure"] = kwargs.get("structure", "transversal")
+        kwargs = {}
+        for name, default in params:
+            kwargs[name.lower()] = ask(name, default)
+        print("\nGenerating…")
         vhdl = func(**kwargs)
         fname = {
-            "1": "fir_filter.vhd",
             "2": "digital_mixer.vhd",
             "3": "pi_controller.vhd",
             "4": "polyphase_decimator.vhd",

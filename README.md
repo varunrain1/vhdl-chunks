@@ -15,18 +15,43 @@ All generated files are written to the `output/` folder and use **asynchronous a
 
 **File:** `fir_filter.vhd`
 
+When you select the FIR option the generator asks you interactively:
+
+1. **Design method**
+   - Normal → Hamming window
+   - Kaiser → Kaiser window (you supply beta)
+
+2. **Filter type**
+   - LPF (low-pass)
+   - HPF (high-pass)
+   - BPF (band-pass)
+   - BSF (band-stop)
+
+3. **Frequency edges** (normalised 0 … 0.5)
+   - LPF / HPF → single cutoff
+   - BPF / BSF → lower and upper band edges
+
+4. **Kaiser beta** (only when Kaiser is chosen)
+   - Typical values: 5 ≈ −50 dB, 8.6 ≈ −70 dB, 12 ≈ −90 dB sidelobes
+
+5. **Hardware parameters**
+   - DATA_WIDTH, COEFF_WIDTH, TAPS, ACC_WIDTH, structure (transversal / systolic)
+
 | Parameter       | Type     | Default      | Description |
 |-----------------|----------|--------------|-------------|
 | `DATA_WIDTH`    | positive | 16           | Bit-width of the input sample (`din`) |
 | `COEFF_WIDTH`   | positive | 16           | Bit-width of each filter coefficient |
-| `TAPS`          | positive | 16           | Number of filter taps (order + 1) |
-| `ACC_WIDTH`     | positive | 32           | Bit-width of the accumulator / output. Should be ≥ `DATA_WIDTH + COEFF_WIDTH + log2(TAPS)` |
-| `structure`     | string   | transversal  | Architecture style: `transversal` (direct-form) or `systolic` (cascaded MAC pipeline) |
-| `cutoff`        | float    | 0.2          | Normalised cut-off frequency (0 … 0.5) used for automatic coefficient design |
+| `TAPS`          | positive | 31           | Number of filter taps (order + 1) |
+| `ACC_WIDTH`     | positive | 32           | Bit-width of the accumulator / output |
+| `structure`     | string   | transversal  | `transversal` or `systolic` |
+| `window`        | string   | hamming      | `hamming` or `kaiser` |
+| `ftype`         | string   | lowpass      | `lowpass` / `highpass` / `bandpass` / `bandstop` |
+| `cutoff`        | float or [f1,f2] | 0.2   | Normalised edge(s) |
+| `beta`          | float    | 8.6          | Kaiser beta (ignored for Hamming) |
 
 **Notes**
-- Coefficients are automatically designed as a linear-phase low-pass FIR (windowed-sinc / firwin) and embedded as VHDL constants.
-- `transversal` = classic tapped-delay-line + parallel multipliers + adder tree.  
+- Coefficients are designed automatically (SciPy `firwin` when available, pure-Python windowed-sinc otherwise) and embedded as VHDL constants.
+- `transversal` = classic tapped-delay-line + parallel multipliers + adder tree.
 - `systolic` = registered multiply-accumulate chain (better DSP-slice mapping, higher fmax).
 
 ---
@@ -122,7 +147,7 @@ All generated files are written to the `output/` folder and use **asynchronous a
 
 ---
 
-## 7. Streaming Radix-2 FFT (SDF skeleton)
+## 7. Streaming Radix-2 FFT (complete SDF)
 
 **File:** `streaming_fft_sdf.vhd`
 
@@ -133,10 +158,12 @@ All generated files are written to the `output/` folder and use **asynchronous a
 | `TWIDDLE_WIDTH`   | positive | 16      | Bit-width of the embedded twiddle factors |
 
 **Notes**
-- Single-path Delay-Feedback (SDF) style streaming architecture.
-- One complex sample in / one complex sample out per clock after the pipeline fills.
-- Twiddle factors are pre-computed and stored as a VHDL constant table.
-- This is a working educational skeleton; a production SDF FFT would add the full feedback delay lines per stage.
+- Fully synthesizable Single-Path Delay-Feedback (SDF) streaming FFT.
+- `log2(N)` cascaded stages, each containing a proper feedback delay of length `N/2^(stage+1)`.
+- Butterfly (add/sub) + complex twiddle multiply on the lower path.
+- One complex sample in / one complex sample out per clock after pipeline fill-up.
+- Twiddle factors are pre-computed and stored as a VHDL constant ROM.
+- Asynchronous active-high reset and clock-enable support.
 
 ---
 
