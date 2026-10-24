@@ -133,6 +133,37 @@ def _kaiser_window(M: int, beta: float) -> List[float]:
     return w
 
 
+def kaiser_beta_from_attenuation(As: float) -> float:
+    """
+    Kaiser beta from desired stopband attenuation As in dB.
+    Classic Oppenheim / Schafer / Kaiser formula.
+    """
+    if As > 50.0:
+        return 0.1102 * (As - 8.7)
+    if As >= 21.0:
+        return 0.5842 * ((As - 21.0) ** 0.4) + 0.07886 * (As - 21.0)
+    return 0.0
+
+
+def kaiser_numtaps_estimate(As: float, delta_f_norm: float) -> int:
+    """
+    Estimate FIR length N for Kaiser window.
+    delta_f_norm = (fstop - fpass) / fs   (fraction of sampling rate)
+
+    Uses the common formula:
+        N ≈ (As - 7.95) / (14.36 * Δf) + 1
+    Result is forced to an odd length (Type-I linear phase).
+    """
+    if delta_f_norm <= 0.0:
+        raise ValueError("Transition width must be > 0")
+    n = int(math.ceil((As - 7.95) / (14.36 * delta_f_norm))) + 1
+    if n < 3:
+        n = 3
+    if n % 2 == 0:
+        n += 1
+    return n
+
+
 def design_fir_coefficients(
     num_taps: int,
     cutoff: Union[float, Sequence[float]],
@@ -1112,11 +1143,17 @@ def ask(prompt: str, default):
 def _ask_fir_design_params() -> dict:
     """
     Interactive questions for FIR coefficient design.
-    Returns a dict ready to pass to generate_fir / design_fir_coefficients.
+
+    For Kaiser LPF/HPF the full design flow is used:
+      fs, fpass, fstop, As
+      → transition width, midpoint cutoff, beta, estimated N
+      → coefficients via windowed-sinc / firwin
+
+    Frequencies are entered in real Hz and normalised internally.
     """
     print("\n  --- FIR design method ---")
     print("  1) Normal (Hamming window)")
-    print("  2) Kaiser window")
+    print("  2) Kaiser window  (estimates N and beta from specs)")
     method = input("  Choose method [1]: ").strip() or "1"
     window = "kaiser" if method == "2" else "hamming"
 
@@ -1129,32 +1166,93 @@ def _ask_fir_design_params() -> dict:
     ft_choice = input("  Choose type [1]: ").strip() or "1"
     ftype = ftype_map.get(ft_choice, "lowpass")
 
-    print("\n  --- Frequency parameters (normalised to fs, so 0.0 … 0.5) ---")
-    fs = ask("Sampling frequency fs (1.0 = normalised)", 1.0)
-
-    if ftype in ("lowpass", "highpass"):
-        cutoff = ask("Cutoff frequency (normalised)", 0.2)
-    else:
-        f_low = ask("Lower band edge (normalised)", 0.15)
-        f_high = ask("Upper band edge (normalised)", 0.35)
-        cutoff = [f_low, f_high]
+    print("\n  --- Frequency parameters (enter real values in Hz) ---")
+    fs = ask("Sampling frequency fs [Hz]", 48e6)
+    if fs <= 0:
+        print("  WARNING: fs must be > 0, falling back to 1.0")
+        fs = 1.0
 
     beta = 8.6
-    if window == "kaiser":
-        print("\n  --- Kaiser parameters ---")
-        print("  Typical beta values:")
-        print("    0     → rectangular")
-        print("    5.0   → ~ -50 dB sidelobes")
-        print("    8.6   → ~ -70 dB (default)")
-        print("   12.0   → ~ -90 dB")
-        beta = ask("Kaiser beta", 8.6)
-        # Optional: user can also give desired attenuation and we keep beta as-is
-        # (full kaiserord estimation can be added later)
+    taps = 31
+
+    if window == "kaiser" and ftype in ("lowpass", "highpass"):
+        # Full Kaiser specification flow
+        fpass = ask("Passband edge fpass [Hz]", 8e6)
+        fstop = ask("Stopband edge fstop [Hz]", 10e6)
+        As    = ask("Stopband attenuation As [dB]", 60.0)
+
+        if ftype == "lowpass" and not (0 < fpass < fstop < fs / 2):
+            print("  WARNING: for LPF need 0 < fpass < fstop < fs/2")
+        if ftype == "highpass" and not (0 < fstop < fpass < fs / 2):
+            print("  WARNING: for HPF need 0 < fstop < fpass < fs/2")
+
+        # Transition width, midpoint cutoff, normalised values
+        if ftype == "lowpass":
+            delta_f = abs(fstop - fpass)
+            fc_hz = 0.5 * (fpass + fstop)
+        else:  # highpass – transition still |fpass-fstop|
+            delta_f = abs(fpass - fstop)
+            fc_hz = 0.5 * (fpass + fstop)
+
+        delta_f_norm = delta_f / fs
+        fc_norm = fc_hz / fs
+        fpass_norm = fpass / fs
+        fstop_norm = fstop / fs
+        omega_c = 2.0 * math.pi * fc_norm   # rad/sample
+
+        beta = kaiser_beta_from_attenuation(As)
+        taps_est = kaiser_numtaps_estimate(As, delta_f_norm)
+
+        print("\n  --- Computed design values ---")
+        print(f"  Transition width Δf     = {delta_f:g} Hz  ({delta_f_norm:.6f} × fs)")
+        print(f"  Cut-off (midpoint) fc   = {fc_hz:g} Hz  (norm {fc_norm:.6f})")
+        print(f"  Angular cut-off ωc      = {omega_c:.6f} rad/sample")
+        print(f"  Normalised fpass/fstop  = {fpass_norm:.6f} / {fstop_norm:.6f}")
+        print(f"  Kaiser beta             = {beta:.4f}")
+        print(f"  Estimated filter length = {taps_est} taps")
+
+        taps = ask("TAPS (filter length, Enter keeps estimate)", taps_est)
+        cutoff = fc_norm
+
+    elif window == "kaiser":
+        # BPF / BSF with Kaiser – user supplies edges + As/beta
+        f_low_hz  = ask("Lower band edge [Hz]", 8e6)
+        f_high_hz = ask("Upper band edge [Hz]", 10e6)
+        As = ask("Stopband attenuation As [dB] (used for beta)", 60.0)
+        beta = kaiser_beta_from_attenuation(As)
+        print(f"  → Kaiser beta = {beta:.4f}")
+        cutoff = [f_low_hz / fs, f_high_hz / fs]
+        print(f"  → normalised edges = [{cutoff[0]:.6f}, {cutoff[1]:.6f}]")
+        # rough transition estimate using lower edge distance as proxy
+        delta_f_norm = abs(cutoff[1] - cutoff[0]) * 0.5
+        if delta_f_norm > 0:
+            taps = ask("TAPS (filter length)", kaiser_numtaps_estimate(As, max(delta_f_norm, 1e-3)))
+        else:
+            taps = ask("TAPS (filter length)", 63)
+
+    else:
+        # Hamming – single cutoff or edges, manual taps
+        if ftype in ("lowpass", "highpass"):
+            f_hz = ask("Cutoff frequency [Hz]", 8e6)
+            cutoff = f_hz / fs
+            print(f"  → normalised cutoff = {cutoff:.6f}")
+        else:
+            f_low_hz  = ask("Lower band edge [Hz]", 8e6)
+            f_high_hz = ask("Upper band edge [Hz]", 12e6)
+            cutoff = [f_low_hz / fs, f_high_hz / fs]
+            print(f"  → normalised edges = [{cutoff[0]:.6f}, {cutoff[1]:.6f}]")
+        taps = ask("TAPS (filter length)", 31)
+
+    # Sanity check on normalised edges
+    edges = cutoff if isinstance(cutoff, list) else [cutoff]
+    for e in edges:
+        if not (0.0 < e < 0.5):
+            print(f"  WARNING: normalised frequency {e:.4f} is outside (0, 0.5).")
+            print("           Check that all edge frequencies are < fs/2.")
 
     print("\n  --- Hardware parameters ---")
     data_width  = ask("DATA_WIDTH", 16)
     coeff_width = ask("COEFF_WIDTH", 16)
-    taps        = ask("TAPS (filter length)", 31)
     acc_width   = ask("ACC_WIDTH", 32)
     structure   = ask("structure (transversal/systolic)", "transversal")
 
@@ -1164,8 +1262,8 @@ def _ask_fir_design_params() -> dict:
         "taps": taps,
         "acc_width": acc_width,
         "structure": structure,
-        "cutoff": cutoff,
-        "fs": fs,
+        "cutoff": cutoff,       # normalised
+        "fs": 1.0,              # design functions see normalised freqs
         "window": window,
         "ftype": ftype,
         "beta": beta,

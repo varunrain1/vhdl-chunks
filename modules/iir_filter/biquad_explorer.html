@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Biquad IIR Explorer</title>
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #1a2332;
+    --text: #e7ecf3;
+    --muted: #8b9bb4;
+    --accent: #3b82f6;
+    --accent2: #22c55e;
+    --warn: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.45;
+  }
+  header {
+    padding: 1.25rem 1.5rem;
+    border-bottom: 1px solid #2a3548;
+    background: linear-gradient(180deg, #152033, var(--bg));
+  }
+  header h1 { margin: 0 0 0.35rem; font-size: 1.35rem; font-weight: 600; }
+  header p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+  .layout {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 1rem;
+    padding: 1rem;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+  @media (max-width: 960px) {
+    .layout { grid-template-columns: 1fr; }
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid #2a3548;
+    border-radius: 12px;
+    padding: 1rem 1.1rem;
+  }
+  .panel h2 {
+    margin: 0 0 0.75rem;
+    font-size: 0.95rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+  label {
+    display: block;
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin-top: 0.85rem;
+    margin-bottom: 0.25rem;
+  }
+  input[type="range"] { width: 100%; accent-color: var(--accent); }
+  .val {
+    float: right;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  select, button {
+    width: 100%;
+    margin-top: 0.35rem;
+    padding: 0.5rem 0.65rem;
+    border-radius: 8px;
+    border: 1px solid #2a3548;
+    background: #121a27;
+    color: var(--text);
+    font-size: 0.95rem;
+  }
+  button {
+    background: var(--accent);
+    border: none;
+    cursor: pointer;
+    font-weight: 600;
+    margin-top: 1rem;
+  }
+  button:hover { filter: brightness(1.08); }
+  .coeff-box {
+    margin-top: 1rem;
+    padding: 0.75rem;
+    background: #121a27;
+    border-radius: 8px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.82rem;
+    line-height: 1.55;
+    color: #c6d4ea;
+  }
+  .plots {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+  @media (max-width: 1100px) {
+    .plots { grid-template-columns: 1fr; }
+  }
+  .plot-card {
+    background: var(--panel);
+    border: 1px solid #2a3548;
+    border-radius: 12px;
+    padding: 0.5rem;
+    min-height: 340px;
+  }
+  .note {
+    margin-top: 1rem;
+    padding: 0.75rem 0.9rem;
+    background: #121a27;
+    border-left: 3px solid var(--accent2);
+    border-radius: 0 8px 8px 0;
+    font-size: 0.88rem;
+    color: var(--muted);
+  }
+  .note strong { color: var(--text); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Biquad IIR Explorer</h1>
+  <p>
+    Drag the controls to see how poles, zeros, frequency response and impulse response are linked.
+    All of this is the same math that ends up as the five coefficients in the VHDL.
+  </p>
+</header>
+
+<div class="layout">
+  <aside class="panel">
+    <h2>Design</h2>
+
+    <label>Filter type</label>
+    <select id="ftype">
+      <option value="lowpass">Low-pass</option>
+      <option value="highpass">High-pass</option>
+      <option value="bandpass">Band-pass</option>
+      <option value="notch">Notch (band-stop)</option>
+    </select>
+
+    <label>Cutoff / centre frequency <span class="val" id="fcVal">0.10</span></label>
+    <input type="range" id="fc" min="0.02" max="0.48" step="0.005" value="0.10">
+
+    <label>Q (resonance) <span class="val" id="qVal">0.707</span></label>
+    <input type="range" id="q" min="0.3" max="8" step="0.05" value="0.707">
+
+    <label>Gain (linear) <span class="val" id="gVal">1.00</span></label>
+    <input type="range" id="gain" min="0.2" max="2" step="0.05" value="1.0">
+
+    <button id="resetBtn">Reset defaults</button>
+
+    <div class="coeff-box" id="coeffBox">
+      Computing…
+    </div>
+
+    <div class="note">
+      <strong>Remember:</strong><br>
+      • <code>y[n]</code> = output signal (time domain)<br>
+      • <code>h[n]</code> = impulse response (time domain)<br>
+      • <code>H(z)</code> = transfer function (z-domain)<br>
+      • Frequency response = <code>H(e<sup>jω</sup>)</code> on the unit circle<br><br>
+      FIR lets you design <code>h[n]</code> directly because it is finite.
+      IIR designs <code>H(z)</code> because <code>h[n]</code> is infinite.
+    </div>
+  </aside>
+
+  <main class="plots">
+    <div class="plot-card" id="pzPlot"></div>
+    <div class="plot-card" id="magPlot"></div>
+    <div class="plot-card" id="phasePlot"></div>
+    <div class="plot-card" id="impPlot"></div>
+  </main>
+</div>
+
+<script>
+// ---------- RBJ Audio EQ Cookbook style biquad design ----------
+function designBiquad(ftype, fc, Q, gain) {
+  // fc is normalised (0..0.5), fs = 1
+  const w0 = 2 * Math.PI * fc;
+  const cosw = Math.cos(w0);
+  const sinw = Math.sin(w0);
+  const alpha = sinw / (2 * Q);
+  const A = Math.sqrt(gain);
+
+  let b0, b1, b2, a0, a1, a2;
+
+  switch (ftype) {
+    case "lowpass":
+      b0 = (1 - cosw) / 2;
+      b1 = 1 - cosw;
+      b2 = (1 - cosw) / 2;
+      a0 = 1 + alpha;
+      a1 = -2 * cosw;
+      a2 = 1 - alpha;
+      break;
+    case "highpass":
+      b0 = (1 + cosw) / 2;
+      b1 = -(1 + cosw);
+      b2 = (1 + cosw) / 2;
+      a0 = 1 + alpha;
+      a1 = -2 * cosw;
+      a2 = 1 - alpha;
+      break;
+    case "bandpass":
+      // constant skirt gain, peak gain = Q
+      b0 = alpha;
+      b1 = 0;
+      b2 = -alpha;
+      a0 = 1 + alpha;
+      a1 = -2 * cosw;
+      a2 = 1 - alpha;
+      break;
+    case "notch":
+      b0 = 1;
+      b1 = -2 * cosw;
+      b2 = 1;
+      a0 = 1 + alpha;
+      a1 = -2 * cosw;
+      a2 = 1 - alpha;
+      break;
+    default:
+      b0 = 1; b1 = 0; b2 = 0; a0 = 1; a1 = 0; a2 = 0;
+  }
+
+  // normalise so a0 = 1
+  b0 /= a0; b1 /= a0; b2 /= a0;
+  a1 /= a0; a2 /= a0;
+  a0 = 1;
+
+  // apply gain on numerator for peaking-like feel on LP/HP
+  if (ftype === "lowpass" || ftype === "highpass") {
+    b0 *= gain; b1 *= gain; b2 *= gain;
+  }
+
+  return { b0, b1, b2, a1, a2 };
+}
+
+function polesZeros(c) {
+  // zeros: roots of b0 + b1 z^{-1} + b2 z^{-2} = 0
+  // multiply by z^2: b0 z^2 + b1 z + b2 = 0
+  const zeros = quadraticRoots(c.b0, c.b1, c.b2);
+  // poles: z^2 + a1 z + a2 = 0
+  const poles = quadraticRoots(1, c.a1, c.a2);
+  return { poles, zeros };
+}
+
+function quadraticRoots(a, b, c) {
+  if (Math.abs(a) < 1e-14) {
+    // linear
+    if (Math.abs(b) < 1e-14) return [{ re: 0, im: 0 }, { re: 0, im: 0 }];
+    const r = -c / b;
+    return [{ re: r, im: 0 }, { re: r, im: 0 }];
+  }
+  const disc = b * b - 4 * a * c;
+  if (disc >= 0) {
+    const s = Math.sqrt(disc);
+    return [
+      { re: (-b + s) / (2 * a), im: 0 },
+      { re: (-b - s) / (2 * a), im: 0 },
+    ];
+  }
+  const s = Math.sqrt(-disc);
+  return [
+    { re: -b / (2 * a), im:  s / (2 * a) },
+    { re: -b / (2 * a), im: -s / (2 * a) },
+  ];
+}
+
+function freqResponse(c, N = 512) {
+  const mag = [], phase = [], freq = [];
+  for (let i = 0; i < N; i++) {
+    const w = Math.PI * i / (N - 1); // 0 .. pi
+    const z1re = Math.cos(w), z1im = -Math.sin(w); // z^{-1}
+    const z2re = Math.cos(2 * w), z2im = -Math.sin(2 * w);
+
+    // numerator
+    let nre = c.b0 + c.b1 * z1re + c.b2 * z2re;
+    let nim =        c.b1 * z1im + c.b2 * z2im;
+    // denominator
+    let dre = 1 + c.a1 * z1re + c.a2 * z2re;
+    let dim =     c.a1 * z1im + c.a2 * z2im;
+
+    // H = num / den
+    const den2 = dre * dre + dim * dim;
+    const hre = (nre * dre + nim * dim) / den2;
+    const him = (nim * dre - nre * dim) / den2;
+
+    const m = Math.sqrt(hre * hre + him * him);
+    const p = Math.atan2(him, hre);
+
+    freq.push(w / Math.PI); // normalised 0..1 (Nyquist = 1)
+    mag.push(20 * Math.log10(m + 1e-12));
+    phase.push(p * 180 / Math.PI);
+  }
+  return { freq, mag, phase };
+}
+
+function impulseResponse(c, N = 80) {
+  // y[n] = b0 x[n] + b1 x[n-1] + b2 x[n-2] - a1 y[n-1] - a2 y[n-2]
+  const y = new Array(N).fill(0);
+  let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+  for (let n = 0; n < N; n++) {
+    const x0 = (n === 0) ? 1 : 0;
+    const yn = c.b0 * x0 + c.b1 * x1 + c.b2 * x2 - c.a1 * y1 - c.a2 * y2;
+    y[n] = yn;
+    x2 = x1; x1 = x0;
+    y2 = y1; y1 = yn;
+  }
+  return y;
+}
+
+// ---------- UI / plots ----------
+const layoutBase = {
+  paper_bgcolor: "rgba(0,0,0,0)",
+  plot_bgcolor: "rgba(0,0,0,0)",
+  font: { color: "#c6d4ea", size: 11 },
+  margin: { t: 36, r: 20, b: 40, l: 50 },
+};
+
+function drawAll() {
+  const ftype = document.getElementById("ftype").value;
+  const fc = parseFloat(document.getElementById("fc").value);
+  const Q = parseFloat(document.getElementById("q").value);
+  const gain = parseFloat(document.getElementById("gain").value);
+
+  document.getElementById("fcVal").textContent = fc.toFixed(3);
+  document.getElementById("qVal").textContent = Q.toFixed(3);
+  document.getElementById("gVal").textContent = gain.toFixed(2);
+
+  const c = designBiquad(ftype, fc, Q, gain);
+  const { poles, zeros } = polesZeros(c);
+  const fr = freqResponse(c);
+  const h = impulseResponse(c);
+
+  document.getElementById("coeffBox").innerHTML =
+    `<div>b0 = ${c.b0.toFixed(6)}</div>` +
+    `<div>b1 = ${c.b1.toFixed(6)}</div>` +
+    `<div>b2 = ${c.b2.toFixed(6)}</div>` +
+    `<div>a1 = ${c.a1.toFixed(6)}</div>` +
+    `<div>a2 = ${c.a2.toFixed(6)}</div>` +
+    `<div style="margin-top:0.5rem;color:#8b9bb4">These 5 numbers become the VHDL constants.</div>`;
+
+  // Pole-zero
+  const circle = { x: [], y: [] };
+  for (let i = 0; i <= 200; i++) {
+    const th = 2 * Math.PI * i / 200;
+    circle.x.push(Math.cos(th));
+    circle.y.push(Math.sin(th));
+  }
+  Plotly.newPlot("pzPlot", [
+    { x: circle.x, y: circle.y, mode: "lines", line: { color: "#3b4a63" }, name: "Unit circle", hoverinfo: "skip" },
+    { x: zeros.map(z => z.re), y: zeros.map(z => z.im), mode: "markers",
+      marker: { size: 12, symbol: "circle-open", color: "#22c55e", line: { width: 2 } }, name: "Zeros" },
+    { x: poles.map(p => p.re), y: poles.map(p => p.im), mode: "markers",
+      marker: { size: 12, symbol: "x", color: "#ef4444", line: { width: 2 } }, name: "Poles" },
+  ], {
+    ...layoutBase,
+    title: { text: "z-plane (poles ×  zeros ○)", font: { size: 13 } },
+    xaxis: { title: "Re", range: [-1.4, 1.4], zeroline: true, gridcolor: "#243044" },
+    yaxis: { title: "Im", range: [-1.4, 1.4], scaleanchor: "x", zeroline: true, gridcolor: "#243044" },
+    legend: { orientation: "h", y: 1.12 },
+  }, { responsive: true, displayModeBar: false });
+
+  // Magnitude
+  Plotly.newPlot("magPlot", [{
+    x: fr.freq, y: fr.mag, mode: "lines", line: { color: "#3b82f6", width: 2 }, name: "|H|"
+  }], {
+    ...layoutBase,
+    title: { text: "Frequency response (magnitude)", font: { size: 13 } },
+    xaxis: { title: "Normalised frequency (Nyquist = 1)", gridcolor: "#243044" },
+    yaxis: { title: "Magnitude (dB)", range: [-60, 20], gridcolor: "#243044" },
+  }, { responsive: true, displayModeBar: false });
+
+  // Phase
+  Plotly.newPlot("phasePlot", [{
+    x: fr.freq, y: fr.phase, mode: "lines", line: { color: "#a78bfa", width: 2 }
+  }], {
+    ...layoutBase,
+    title: { text: "Frequency response (phase)", font: { size: 13 } },
+    xaxis: { title: "Normalised frequency (Nyquist = 1)", gridcolor: "#243044" },
+    yaxis: { title: "Phase (deg)", gridcolor: "#243044" },
+  }, { responsive: true, displayModeBar: false });
+
+  // Impulse response
+  Plotly.newPlot("impPlot", [{
+    x: [...Array(h.length).keys()], y: h, type: "bar",
+    marker: { color: "#22c55e" }, name: "h[n]"
+  }], {
+    ...layoutBase,
+    title: { text: "Impulse response h[n] (time domain)", font: { size: 13 } },
+    xaxis: { title: "n (samples)", gridcolor: "#243044" },
+    yaxis: { title: "Amplitude", gridcolor: "#243044" },
+  }, { responsive: true, displayModeBar: false });
+}
+
+["ftype", "fc", "q", "gain"].forEach(id => {
+  document.getElementById(id).addEventListener("input", drawAll);
+});
+document.getElementById("resetBtn").addEventListener("click", () => {
+  document.getElementById("ftype").value = "lowpass";
+  document.getElementById("fc").value = 0.10;
+  document.getElementById("q").value = 0.707;
+  document.getElementById("gain").value = 1.0;
+  drawAll();
+});
+
+drawAll();
+</script>
+</body>
+</html>

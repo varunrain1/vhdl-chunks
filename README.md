@@ -27,9 +27,11 @@ When you select the FIR option the generator asks you interactively:
    - BPF (band-pass)
    - BSF (band-stop)
 
-3. **Frequency edges** (normalised 0 … 0.5)
-   - LPF / HPF → single cutoff
-   - BPF / BSF → lower and upper band edges
+3. **Frequency parameters** (enter real values in **Hz**)
+   - Sampling frequency \(f_s\) (e.g. 200e6)
+   - LPF / HPF → cutoff frequency in Hz
+   - BPF / BSF → lower and upper band edges in Hz
+   - The script automatically normalises: `f_norm = f_Hz / fs`
 
 4. **Kaiser beta** (only when Kaiser is chosen)
    - Typical values: 5 ≈ −50 dB, 8.6 ≈ −70 dB, 12 ≈ −90 dB sidelobes
@@ -46,10 +48,11 @@ When you select the FIR option the generator asks you interactively:
 | `structure`     | string   | transversal  | `transversal` or `systolic` |
 | `window`        | string   | hamming      | `hamming` or `kaiser` |
 | `ftype`         | string   | lowpass      | `lowpass` / `highpass` / `bandpass` / `bandstop` |
-| `cutoff`        | float or [f1,f2] | 0.2   | Normalised edge(s) |
+| `cutoff`        | float or [f1,f2] | —      | Normalised edge(s) computed from Hz inputs |
 | `beta`          | float    | 8.6          | Kaiser beta (ignored for Hamming) |
 
 **Notes**
+- Enter frequencies in real Hz; the generator divides by \(f_s\) to obtain normalised values for the design functions.
 - Coefficients are designed automatically (SciPy `firwin` when available, pure-Python windowed-sinc otherwise) and embedded as VHDL constants.
 - `transversal` = classic tapped-delay-line + parallel multipliers + adder tree.
 - `systolic` = registered multiply-accumulate chain (better DSP-slice mapping, higher fmax).
