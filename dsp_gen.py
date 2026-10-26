@@ -268,6 +268,166 @@ def design_fir_coefficients(
     return h
 
 
+def _quadratic_roots(a: float, b: float, c: float) -> List[complex]:
+    """Roots of a z^2 + b z + c = 0."""
+    if abs(a) < 1e-18:
+        if abs(b) < 1e-18:
+            return []
+        return [complex(-c / b, 0.0)]
+    disc = b * b - 4 * a * c
+    if disc >= 0:
+        s = math.sqrt(disc)
+        return [complex((-b + s) / (2 * a), 0.0), complex((-b - s) / (2 * a), 0.0)]
+    s = math.sqrt(-disc)
+    return [complex(-b / (2 * a), s / (2 * a)), complex(-b / (2 * a), -s / (2 * a))]
+
+
+def bilinear_biquad_design(
+    ftype: str = "lowpass",
+    fc_hz: float = 8e6,
+    fs_hz: float = 48e6,
+    f_low_hz: Optional[float] = None,
+    f_high_hz: Optional[float] = None,
+    verbose: bool = True,
+) -> Tuple[List[float], List[float], dict]:
+    """
+    Full educational IIR design path for a single 2nd-order section:
+
+      specs → analog Butterworth prototype → pre-warp → bilinear
+           → H(z) → poles/zeros → coefficients (b, a)
+
+    Returns
+    -------
+    b, a : lists of length 3 (a[0] = 1)
+    info : dict with intermediate design quantities
+    """
+    ftype = ftype.lower().replace(" ", "")
+    aliases = {"lpf": "lowpass", "hpf": "highpass", "bpf": "bandpass",
+               "bsf": "bandstop", "notch": "bandstop"}
+    ftype = aliases.get(ftype, ftype)
+
+    if fs_hz <= 0:
+        raise ValueError("fs must be > 0")
+
+    # ---- normalised digital frequencies (cycles/sample) ----
+    if ftype in ("lowpass", "highpass"):
+        fc_norm = fc_hz / fs_hz
+        edges_hz = [fc_hz]
+        edges_norm = [fc_norm]
+    else:
+        if f_low_hz is None or f_high_hz is None:
+            raise ValueError("bandpass/bandstop need f_low_hz and f_high_hz")
+        edges_hz = [f_low_hz, f_high_hz]
+        edges_norm = [f_low_hz / fs_hz, f_high_hz / fs_hz]
+        fc_norm = 0.5 * (edges_norm[0] + edges_norm[1])
+
+    if verbose:
+        print("\n  === IIR design path (bilinear) ===")
+        print(f"  Type              : {ftype}")
+        print(f"  fs                : {fs_hz:g} Hz")
+        if ftype in ("lowpass", "highpass"):
+            print(f"  Digital cutoff fc : {fc_hz:g} Hz  (norm {fc_norm:.6f})")
+        else:
+            print(f"  Band edges        : {edges_hz[0]:g} .. {edges_hz[1]:g} Hz")
+            print(f"  Normalised edges  : {edges_norm[0]:.6f} .. {edges_norm[1]:.6f}")
+
+    # Prefer SciPy when available (handles all types cleanly)
+    if HAS_SCIPY:
+        wn = fc_norm if ftype in ("lowpass", "highpass") else edges_norm
+        b, a = sp_signal.iirfilter(
+            2, wn, btype=ftype, ftype="butter", fs=1.0, output="ba"
+        )
+        b, a = b.tolist(), a.tolist()
+        # poles / zeros from transfer function
+        z_zeros, z_poles, k_gain = sp_signal.tf2zpk(b, a)
+        zeros = [complex(z) for z in z_zeros]
+        poles = [complex(p) for p in z_poles]
+        if verbose:
+            print("  Prototype         : 2nd-order Butterworth (SciPy iirfilter)")
+            print("  Mapping           : bilinear transform (with pre-warping)")
+            print(f"  H(z) numerator b  : [{b[0]:.8f}, {b[1]:.8f}, {b[2]:.8f}]")
+            print(f"  H(z) denominator a: [{a[0]:.8f}, {a[1]:.8f}, {a[2]:.8f}]")
+            print("  Zeros :", ", ".join(f"{z.real:+.4f}{z.imag:+.4f}j" for z in zeros))
+            print("  Poles :", ", ".join(f"{p.real:+.4f}{p.imag:+.4f}j" for p in poles))
+            for p in poles:
+                r = abs(p)
+                print(f"    |pole| = {r:.6f}  ({'stable' if r < 1.0 else 'UNSTABLE'})")
+        info = {
+            "ftype": ftype, "fs_hz": fs_hz, "edges_hz": edges_hz,
+            "edges_norm": edges_norm, "fc_norm": fc_norm,
+            "b": b, "a": a, "zeros": zeros, "poles": poles,
+            "method": "scipy_bilinear_butterworth",
+        }
+        return b, a, info
+
+    # ---- pure-Python path: explicit pre-warp + bilinear (LP/HP only) ----
+    if ftype not in ("lowpass", "highpass"):
+        raise RuntimeError(
+            "Pure-Python bilinear path supports lowpass/highpass only. "
+            "Install scipy for bandpass/bandstop."
+        )
+
+    # Pre-warp: ω_a = 2*fs*tan(π*fc/fs)  but with normalised time (fs=1 in formulas
+    # that use tan(π f_norm) the 2*fs scale cancels in the ratio K/ω_a).
+    # Using the common form with K = 1 and k = tan(π f_norm):
+    k = math.tan(math.pi * fc_norm)          # pre-warped analog frequency proxy
+    k2 = k * k
+    sqrt2 = math.sqrt(2.0)
+
+    if verbose:
+        omega_a = 2.0 * fs_hz * k            # actual analog rad/s
+        print(f"  Pre-warp          : k = tan(π·fc/fs) = {k:.6f}")
+        print(f"  Analog ω_a        : {omega_a:g} rad/s")
+        print("  Analog prototype  : H_a(s) = ω_a² / (s² + √2 ω_a s + ω_a²)")
+        print("  Bilinear map      : s = 2 fs (1-z^{-1})/(1+z^{-1})")
+
+    if ftype == "lowpass":
+        # H(z) after bilinear on Butterworth LP
+        norm = 1.0 + sqrt2 * k + k2
+        b0 = k2 / norm
+        b1 = 2.0 * b0
+        b2 = b0
+        a0 = 1.0
+        a1 = 2.0 * (k2 - 1.0) / norm
+        a2 = (1.0 - sqrt2 * k + k2) / norm
+    else:  # highpass
+        norm = 1.0 + sqrt2 * k + k2
+        b0 = 1.0 / norm
+        b1 = -2.0 / norm
+        b2 = 1.0 / norm
+        a0 = 1.0
+        a1 = 2.0 * (k2 - 1.0) / norm
+        a2 = (1.0 - sqrt2 * k + k2) / norm
+
+    b = [b0, b1, b2]
+    a = [a0, a1, a2]
+
+    # Poles / zeros from quadratic factors (positive powers of z)
+    # Num: b0 z^2 + b1 z + b2 ,  Den: a0 z^2 + a1 z + a2
+    zeros = _quadratic_roots(b0, b1, b2)
+    poles = _quadratic_roots(a0, a1, a2)
+
+    if verbose:
+        print(f"  H(z) = ({b0:.8f} + {b1:.8f} z^-1 + {b2:.8f} z^-2) / "
+              f"(1 + {a1:.8f} z^-1 + {a2:.8f} z^-2)")
+        print("  Zeros :", ", ".join(f"{z.real:+.4f}{z.imag:+.4f}j" for z in zeros) or "—")
+        print("  Poles :", ", ".join(f"{p.real:+.4f}{p.imag:+.4f}j" for p in poles) or "—")
+        for p in poles:
+            r = abs(p)
+            print(f"    |pole| = {r:.6f}  ({'stable' if r < 1.0 else 'UNSTABLE'})")
+        print("  Difference equation:")
+        print(f"    y[n] = {b0:.6f} x[n] + {b1:.6f} x[n-1] + {b2:.6f} x[n-2]")
+        print(f"         - ({a1:.6f}) y[n-1] - ({a2:.6f}) y[n-2]")
+
+    info = {
+        "ftype": ftype, "fs_hz": fs_hz, "edges_hz": edges_hz,
+        "edges_norm": edges_norm, "fc_norm": fc_norm, "k_prewarp": k,
+        "b": b, "a": a, "zeros": zeros, "poles": poles,
+        "method": "pure_python_bilinear_butterworth",
+    }
+    return b, a, info
+
+
 def design_biquad_coefficients(
     ftype: str = "lowpass",
     order: int = 2,
@@ -279,26 +439,21 @@ def design_biquad_coefficients(
     """
     Design a 2nd-order Butterworth biquad.
     Returns (b, a) lists of length 3.
-    """
-    if HAS_SCIPY:
-        b, a = sp_signal.iirfilter(
-            2, cutoff, btype=ftype, ftype="butter", fs=fs, output="ba"
-        )
-        return b.tolist(), a.tolist()
 
-    # ---- pure-Python bilinear-transform Butterworth low-pass ----
-    # simple 2nd-order prototype → bilinear
-    fc = float(cutoff) if not isinstance(cutoff, (list, tuple)) else float(cutoff[0])
-    # pre-warp
-    k = math.tan(math.pi * fc / fs)
-    k2 = k * k
-    norm = 1.0 + math.sqrt(2) * k + k2
-    b0 = k2 / norm
-    b1 = 2 * b0
-    b2 = b0
-    a1 = 2 * (k2 - 1) / norm
-    a2 = (1 - math.sqrt(2) * k + k2) / norm
-    return [b0, b1, b2], [1.0, a1, a2]
+    `cutoff` and `fs` are in the same units (normalised if fs=1).
+    """
+    if isinstance(cutoff, (list, tuple)):
+        fc = float(cutoff[0])
+        f_low, f_high = float(cutoff[0]), float(cutoff[1])
+        b, a, _ = bilinear_biquad_design(
+            ftype=ftype, fc_hz=fc, fs_hz=fs,
+            f_low_hz=f_low, f_high_hz=f_high, verbose=False,
+        )
+    else:
+        b, a, _ = bilinear_biquad_design(
+            ftype=ftype, fc_hz=float(cutoff), fs_hz=fs, verbose=False,
+        )
+    return b, a
 
 
 def float_to_fixed(c: float, width: int, frac_bits: Optional[int] = None) -> int:
@@ -785,16 +940,24 @@ def generate_biquad(
     coeff_width: int = 16,
     form: str = "df1",          # df1 | df2
     ftype: str = "lowpass",
-    cutoff: float = 0.1,
+    cutoff: Union[float, Sequence[float]] = 0.1,
     fs: float = 1.0,
+    b_coeffs: Optional[Sequence[float]] = None,
+    a_coeffs: Optional[Sequence[float]] = None,
 ) -> str:
     """
-    Single biquad section.
-    Coefficients automatically designed with scipy (Butterworth).
+    Single biquad section (IIR).
+
+    If b_coeffs/a_coeffs are provided they are used directly; otherwise
+    coefficients are designed via analog prototype + bilinear transform.
     """
-    b, a = design_biquad_coefficients(ftype=ftype, order=2, cutoff=cutoff, fs=fs)
+    if b_coeffs is not None and a_coeffs is not None:
+        b = list(b_coeffs)
+        a = list(a_coeffs)
+    else:
+        b, a = design_biquad_coefficients(ftype=ftype, order=2, cutoff=cutoff, fs=fs)
     # normalise a0 = 1
-    a0 = a[0]
+    a0 = a[0] if abs(a[0]) > 1e-18 else 1.0
     b = [c / a0 for c in b]
     a = [c / a0 for c in a]
 
@@ -1112,9 +1275,7 @@ PROCESSES = {
     "5": ("Polyphase Interpolator (auto coeffs)", generate_polyphase_interpolator,
           [("DATA_WIDTH", 16), ("FACTOR", 4), ("TAPS_PER_PHASE", 8),
            ("COEFF_WIDTH", 16), ("cutoff", 0.4)]),
-    "6": ("Biquad IIR (DF1/DF2) + auto coeffs", generate_biquad,
-          [("DATA_WIDTH", 16), ("COEFF_WIDTH", 16), ("form", "df1"),
-           ("ftype", "lowpass"), ("cutoff", 0.1)]),
+    "6": ("Biquad IIR (bilinear design + DF1/DF2 VHDL)", generate_biquad, None),
     "7": ("Streaming Radix-2 FFT (SDF)", generate_streaming_fft,
           [("DATA_WIDTH", 16), ("N_POINTS", 64), ("TWIDDLE_WIDTH", 16)]),
     "8": ("Coefficient package only (FIR)", None, None),
@@ -1270,6 +1431,66 @@ def _ask_fir_design_params() -> dict:
     }
 
 
+def _ask_iir_design_params() -> dict:
+    """
+    Interactive IIR (biquad) design via analog prototype + bilinear transform.
+
+    Flow printed to the console:
+      specs → pre-warp → H_a(s) → bilinear → H(z) → poles/zeros → coefficients
+    """
+    print("\n  --- IIR filter type ---")
+    print("  1) LPF  (Low-pass Butterworth biquad)")
+    print("  2) HPF  (High-pass Butterworth biquad)")
+    print("  3) BPF  (Band-pass Butterworth biquad)")
+    print("  4) BSF  (Band-stop / notch Butterworth biquad)")
+    ftype_map = {"1": "lowpass", "2": "highpass", "3": "bandpass", "4": "bandstop"}
+    ft_choice = input("  Choose type [1]: ").strip() or "1"
+    ftype = ftype_map.get(ft_choice, "lowpass")
+
+    print("\n  --- Frequency parameters (real Hz) ---")
+    fs = ask("Sampling frequency fs [Hz]", 48e6)
+    f_low = f_high = None
+    fc = 8e6
+    if ftype in ("lowpass", "highpass"):
+        fc = ask("Cutoff frequency fc [Hz]", 8e6)
+    else:
+        f_low = ask("Lower band edge [Hz]", 8e6)
+        f_high = ask("Upper band edge [Hz]", 12e6)
+        fc = 0.5 * (f_low + f_high)
+
+    # Full design path with verbose intermediate results
+    b, a, info = bilinear_biquad_design(
+        ftype=ftype,
+        fc_hz=fc,
+        fs_hz=fs,
+        f_low_hz=f_low,
+        f_high_hz=f_high,
+        verbose=True,
+    )
+
+    print("\n  --- Hardware parameters ---")
+    data_width = ask("DATA_WIDTH", 16)
+    coeff_width = ask("COEFF_WIDTH", 16)
+    form = ask("form (df1 / df2)", "df2")
+
+    # normalised cutoff for generate_biquad fallback
+    if ftype in ("lowpass", "highpass"):
+        cutoff = fc / fs
+    else:
+        cutoff = [f_low / fs, f_high / fs]
+
+    return {
+        "data_width": data_width,
+        "coeff_width": coeff_width,
+        "form": form,
+        "ftype": ftype,
+        "cutoff": cutoff,
+        "fs": 1.0,
+        "b_coeffs": b,
+        "a_coeffs": a,
+    }
+
+
 def main():
     print("=" * 64)
     print("  DSP Composer – Programmatic VHDL Generator")
@@ -1303,6 +1524,12 @@ def main():
         else:
             vhdl = generate_fir(**kwargs)
             fname = "fir_filter.vhd"
+    elif choice == "6":
+        # Full IIR bilinear design + separate VHDL
+        kwargs = _ask_iir_design_params()
+        print("\nGenerating IIR VHDL…")
+        vhdl = generate_biquad(**kwargs)
+        fname = "biquad_iir.vhd"
     else:
         kwargs = {}
         for name, default in params:
@@ -1314,7 +1541,6 @@ def main():
             "3": "pi_controller.vhd",
             "4": "polyphase_decimator.vhd",
             "5": "polyphase_interpolator.vhd",
-            "6": "biquad_iir.vhd",
             "7": "streaming_fft_sdf.vhd",
         }[choice]
 
