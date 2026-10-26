@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Difference Equation → Poles, Zeros & Coefficients</title>
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #1a2332;
+    --text: #e7ecf3;
+    --muted: #8b9bb4;
+    --accent: #3b82f6;
+    --green: #22c55e;
+    --red: #ef4444;
+    --border: #2a3548;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.45;
+  }
+  header {
+    padding: 1.1rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #152033, var(--bg));
+  }
+  header h1 { margin: 0 0 0.3rem; font-size: 1.25rem; }
+  header p { margin: 0; color: var(--muted); font-size: 0.92rem; max-width: 900px; }
+  .layout {
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    gap: 1rem;
+    padding: 1rem;
+    max-width: 1500px;
+    margin: 0 auto;
+  }
+  @media (max-width: 1000px) { .layout { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem 1.1rem;
+  }
+  .panel h2 {
+    margin: 0 0 0.7rem;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+  }
+  label { display: block; font-size: 0.85rem; color: var(--muted); margin-top: 0.7rem; }
+  input[type="text"], textarea, select {
+    width: 100%;
+    margin-top: 0.25rem;
+    padding: 0.5rem 0.6rem;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: #121a27;
+    color: var(--text);
+    font-family: ui-monospace, monospace;
+    font-size: 0.9rem;
+  }
+  textarea { min-height: 72px; resize: vertical; }
+  button {
+    width: 100%;
+    margin-top: 0.85rem;
+    padding: 0.55rem;
+    border: none;
+    border-radius: 8px;
+    background: var(--accent);
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.secondary { background: #334155; margin-top: 0.45rem; }
+  button:hover { filter: brightness(1.08); }
+  .eq {
+    margin-top: 0.8rem;
+    padding: 0.7rem;
+    background: #121a27;
+    border-radius: 8px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.82rem;
+    color: #c6d4ea;
+    word-break: break-all;
+  }
+  .warn {
+    margin-top: 0.6rem;
+    padding: 0.5rem 0.65rem;
+    border-radius: 8px;
+    background: #3b1d1d;
+    color: #fca5a5;
+    font-size: 0.85rem;
+    display: none;
+  }
+  .plots {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+  @media (max-width: 1100px) { .plots { grid-template-columns: 1fr; } }
+  .plot-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    min-height: 360px;
+    padding: 0.35rem;
+  }
+  .plot-card.wide { grid-column: 1 / -1; min-height: 400px; }
+  .hint { font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+  .presets { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.5rem; }
+  .presets button {
+    width: auto;
+    margin: 0;
+    padding: 0.3rem 0.55rem;
+    font-size: 0.78rem;
+    background: #243044;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Difference Equation → Poles, Zeros &amp; Coefficients</h1>
+  <p>
+    Enter the feed-forward (<b>b</b>) and feedback (<b>a</b>) coefficients of a linear difference equation.
+    The tool derives <code>H(z)</code>, finds poles &amp; zeros, plots them on the unit circle,
+    and shows the frequency response. A 3D view shows |H| along the unit circle (angle = frequency).
+  </p>
+</header>
+
+<div class="layout">
+  <aside class="panel">
+    <h2>Difference equation</h2>
+    <div class="hint">
+      Form:<br>
+      <code>y[n] = b0 x[n] + b1 x[n-1] + … − a1 y[n-1] − a2 y[n-2] − …</code><br>
+      (a0 is fixed to 1)
+    </div>
+
+    <label>Numerator b coefficients (comma-separated)</label>
+    <input type="text" id="bCoeffs" value="1, 0.5">
+
+    <label>Denominator a coefficients after a0=1 (comma-separated)</label>
+    <input type="text" id="aCoeffs" value="0.3">
+
+    <div class="presets">
+      <button type="button" data-preset="fir">Simple FIR</button>
+      <button type="button" data-preset="biquad-lp">Biquad LP</button>
+      <button type="button" data-preset="biquad-notch">Notch</button>
+      <button type="button" data-preset="integrator">Leaky integrator</button>
+      <button type="button" data-preset="resonator">Resonator</button>
+    </div>
+
+    <button id="updateBtn">Update plots</button>
+    <button class="secondary" id="clearBtn">Clear feedback (FIR only)</button>
+
+    <div class="eq" id="diffEq">—</div>
+    <div class="eq" id="hzEq">—</div>
+    <div class="eq" id="rootBox">—</div>
+    <div class="warn" id="warnBox"></div>
+
+    <div class="hint" style="margin-top:1rem">
+      <b>Unit circle:</b> z = e<sup>jω</sup>. Angle = digital frequency.
+      Poles (×) must stay inside the circle for stability.
+      Zeros (○) on the circle create notches.
+    </div>
+  </aside>
+
+  <main class="plots">
+    <div class="plot-card" id="pzPlot"></div>
+    <div class="plot-card" id="magPlot"></div>
+    <div class="plot-card wide" id="surfPlot"></div>
+  </main>
+</div>
+
+<script>
+const layoutBase = {
+  paper_bgcolor: "rgba(0,0,0,0)",
+  plot_bgcolor: "rgba(0,0,0,0)",
+  font: { color: "#c6d4ea", size: 11 },
+  margin: { t: 40, r: 24, b: 44, l: 52 },
+};
+
+function parseCoeffs(str) {
+  if (!str.trim()) return [];
+  return str.split(/[\s,]+/).filter(Boolean).map(Number);
+}
+
+function polyRoots(coeffs) {
+  // coeffs highest degree first: [c_n, ..., c0] for c_n z^n + ... + c0
+  // Use companion-matrix eigenvalue method via QR-free Jenkins-style for low order,
+  // or simple closed form for degree <= 2 and eigenvalue iteration for higher.
+  const n = coeffs.length - 1;
+  if (n <= 0) return [];
+  // Remove leading zeros
+  let c = coeffs.slice();
+  while (c.length > 1 && Math.abs(c[0]) < 1e-14) c.shift();
+  const deg = c.length - 1;
+  if (deg === 0) return [];
+  if (deg === 1) return [{ re: -c[1] / c[0], im: 0 }];
+  if (deg === 2) {
+    const a = c[0], b = c[1], d = c[2];
+    const disc = b*b - 4*a*d;
+    if (disc >= 0) {
+      const s = Math.sqrt(disc);
+      return [
+        { re: (-b + s) / (2*a), im: 0 },
+        { re: (-b - s) / (2*a), im: 0 },
+      ];
+    }
+    const s = Math.sqrt(-disc);
+    return [
+      { re: -b/(2*a), im:  s/(2*a) },
+      { re: -b/(2*a), im: -s/(2*a) },
+    ];
+  }
+  // Companion matrix eigenvalues (power method / naive QR is heavy);
+  // use simple Aberth-like or fallback: scipy not available — implement Durand-Kerner
+  return durandKerner(c);
+}
+
+function durandKerner(coeffs) {
+  // coeffs highest first
+  const n = coeffs.length - 1;
+  const a0 = coeffs[0];
+  const p = coeffs.map(v => v / a0);
+  // initial guesses on a circle
+  let roots = [];
+  for (let k = 0; k < n; k++) {
+    const ang = 2 * Math.PI * k / n + 0.4;
+    roots.push({ re: 0.4 * Math.cos(ang), im: 0.4 * Math.sin(ang) });
+  }
+  function evalPoly(z) {
+    let re = 0, im = 0;
+    for (let i = 0; i < p.length; i++) {
+      const nr = re * z.re - im * z.im + p[i];
+      const ni = re * z.im + im * z.re;
+      re = nr; im = ni;
+    }
+    return { re, im };
+  }
+  for (let iter = 0; iter < 80; iter++) {
+    const next = [];
+    for (let i = 0; i < n; i++) {
+      const zi = roots[i];
+      const num = evalPoly(zi);
+      let denRe = 1, denIm = 0;
+      for (let j = 0; j < n; j++) {
+        if (j === i) continue;
+        const dr = zi.re - roots[j].re;
+        const di = zi.im - roots[j].im;
+        const nr = denRe * dr - denIm * di;
+        const ni = denRe * di + denIm * dr;
+        denRe = nr; denIm = ni;
+      }
+      const den2 = denRe*denRe + denIm*denIm + 1e-30;
+      const corrRe = (num.re * denRe + num.im * denIm) / den2;
+      const corrIm = (num.im * denRe - num.re * denIm) / den2;
+      next.push({ re: zi.re - corrRe, im: zi.im - corrIm });
+    }
+    roots = next;
+  }
+  return roots;
+}
+
+function freqResponse(b, a, N = 512) {
+  // a includes a0=1 as a[0]
+  const mag = [], phase = [], freq = [];
+  for (let i = 0; i < N; i++) {
+    const w = Math.PI * i / (N - 1);
+    let nre = 0, nim = 0, dre = 0, dim = 0;
+    for (let k = 0; k < b.length; k++) {
+      nre += b[k] * Math.cos(-k * w);
+      nim += b[k] * Math.sin(-k * w);
+    }
+    for (let k = 0; k < a.length; k++) {
+      dre += a[k] * Math.cos(-k * w);
+      dim += a[k] * Math.sin(-k * w);
+    }
+    const den2 = dre*dre + dim*dim + 1e-30;
+    const hre = (nre*dre + nim*dim) / den2;
+    const him = (nim*dre - nre*dim) / den2;
+    const m = Math.sqrt(hre*hre + him*him);
+    freq.push(w / Math.PI);
+    mag.push(20 * Math.log10(m + 1e-15));
+    phase.push(Math.atan2(him, hre) * 180 / Math.PI);
+  }
+  return { freq, mag, phase };
+}
+
+function unitCircle3D(b, a, nTheta = 180) {
+  // Parametric curve on unit circle with height = |H|
+  const x = [], y = [], z = [], c = [];
+  for (let i = 0; i <= nTheta; i++) {
+    const w = 2 * Math.PI * i / nTheta; // full circle; digital freq 0..2pi
+    // only 0..pi is unique for real coeffs, but full looks nicer
+    let nre = 0, nim = 0, dre = 0, dim = 0;
+    for (let k = 0; k < b.length; k++) {
+      nre += b[k] * Math.cos(-k * w);
+      nim += b[k] * Math.sin(-k * w);
+    }
+    for (let k = 0; k < a.length; k++) {
+      dre += a[k] * Math.cos(-k * w);
+      dim += a[k] * Math.sin(-k * w);
+    }
+    const den2 = dre*dre + dim*dim + 1e-30;
+    const hre = (nre*dre + nim*dim) / den2;
+    const him = (nim*dre - nre*dim) / den2;
+    const m = Math.sqrt(hre*hre + him*him);
+    x.push(Math.cos(w));
+    y.push(Math.sin(w));
+    z.push(m);
+    c.push(20 * Math.log10(m + 1e-15));
+  }
+  return { x, y, z, c };
+}
+
+function fmtPoly(coeffs, varName) {
+  // coeffs low degree first [c0,c1,c2] → c0 + c1 z^{-1} + ...
+  const parts = [];
+  coeffs.forEach((c, k) => {
+    if (Math.abs(c) < 1e-12) return;
+    const term = k === 0 ? c.toFixed(4)
+      : k === 1 ? `${c.toFixed(4)} ${varName}^{-1}`
+      : `${c.toFixed(4)} ${varName}^{-${k}}`;
+    parts.push(term);
+  });
+  return parts.length ? parts.join(" + ").replace(/\+ -/g, "- ") : "0";
+}
+
+function update() {
+  const b = parseCoeffs(document.getElementById("bCoeffs").value);
+  let aTail = parseCoeffs(document.getElementById("aCoeffs").value);
+  if (!b.length) {
+    document.getElementById("warnBox").style.display = "block";
+    document.getElementById("warnBox").textContent = "Enter at least one b coefficient.";
+    return;
+  }
+  const a = [1, ...aTail]; // a0 = 1
+
+  // Difference equation text
+  let eq = "y[n] = ";
+  const terms = [];
+  b.forEach((c, k) => {
+    if (Math.abs(c) < 1e-14) return;
+    const x = k === 0 ? "x[n]" : `x[n-${k}]`;
+    terms.push(`${c.toFixed(4)}·${x}`);
+  });
+  aTail.forEach((c, i) => {
+    if (Math.abs(c) < 1e-14) return;
+    const k = i + 1;
+    terms.push(`${c >= 0 ? "−" : "+"} ${Math.abs(c).toFixed(4)}·y[n-${k}]`);
+  });
+  eq += terms.join(" ");
+  document.getElementById("diffEq").textContent = eq;
+
+  document.getElementById("hzEq").innerHTML =
+    `H(z) = (${fmtPoly(b, "z")}) / (${fmtPoly(a, "z")})`;
+
+  // Poles & zeros: polynomial in positive powers of z
+  // Num: b0 + b1 z^{-1} + ... = z^{-M} (b0 z^M + b1 z^{M-1} + ...)
+  // For roots of numerator: reverse b for highest-first if we use z^{+k} form
+  const bHigh = [...b].reverse(); // [b_M, ..., b0] for b0 z^M + ... if padded? 
+  // Better: zeros of sum b_k z^{-k} = 0 multiply by z^{nb}: sum b_k z^{nb-k} = 0
+  const nb = b.length - 1;
+  const numPoly = new Array(nb + 1).fill(0); // highest first index 0 = z^nb
+  for (let k = 0; k < b.length; k++) numPoly[k] = b[k]; // wait
+  // sum_{k=0}^M b_k z^{M-k} = 0  → coeffs highest first: [b0, b1, ..., bM]
+  const numHighest = b.slice(); // [b0,b1,...,bM] multiplies z^M, z^{M-1}, ...
+  const denHighest = a.slice(); // [1, a1, ..., aN]
+
+  const zeros = polyRoots(numHighest);
+  const poles = polyRoots(denHighest);
+
+  let rootTxt = "Zeros: ";
+  rootTxt += zeros.map(z => `(${z.re.toFixed(3)}${z.im >= 0 ? "+" : ""}${z.im.toFixed(3)}j)`).join(", ") || "—";
+  rootTxt += "\nPoles: ";
+  rootTxt += poles.map(p => `(${p.re.toFixed(3)}${p.im >= 0 ? "+" : ""}${p.im.toFixed(3)}j)`).join(", ") || "—";
+  document.getElementById("rootBox").textContent = rootTxt;
+
+  // Stability
+  const unstable = poles.some(p => Math.hypot(p.re, p.im) >= 1 - 1e-9);
+  const warn = document.getElementById("warnBox");
+  if (unstable) {
+    warn.style.display = "block";
+    warn.textContent = "Unstable: at least one pole is on or outside the unit circle.";
+  } else {
+    warn.style.display = "none";
+  }
+
+  // Pole-zero plot
+  const circle = { x: [], y: [] };
+  for (let i = 0; i <= 256; i++) {
+    const th = 2 * Math.PI * i / 256;
+    circle.x.push(Math.cos(th));
+    circle.y.push(Math.sin(th));
+  }
+  Plotly.newPlot("pzPlot", [
+    { x: circle.x, y: circle.y, mode: "lines", line: { color: "#3b4a63", width: 1 }, name: "Unit circle", hoverinfo: "skip" },
+    { x: zeros.map(z => z.re), y: zeros.map(z => z.im), mode: "markers",
+      marker: { size: 13, symbol: "circle-open", color: "#22c55e", line: { width: 2 } }, name: "Zeros" },
+    { x: poles.map(p => p.re), y: poles.map(p => p.im), mode: "markers",
+      marker: { size: 13, symbol: "x", color: "#ef4444", line: { width: 2 } }, name: "Poles" },
+  ], {
+    ...layoutBase,
+    title: { text: "z-plane (unit circle = all digital frequencies)", font: { size: 13 } },
+    xaxis: { title: "Re{z}", range: [-1.5, 1.5], zeroline: true, gridcolor: "#243044", scaleanchor: "y" },
+    yaxis: { title: "Im{z}", range: [-1.5, 1.5], zeroline: true, gridcolor: "#243044" },
+    legend: { orientation: "h", y: 1.12 },
+  }, { responsive: true, displayModeBar: false });
+
+  // Frequency response magnitude
+  const fr = freqResponse(b, a);
+  Plotly.newPlot("magPlot", [{
+    x: fr.freq, y: fr.mag, mode: "lines", line: { color: "#3b82f6", width: 2 }
+  }], {
+    ...layoutBase,
+    title: { text: "Frequency response |H(e^{jω})| (dB)", font: { size: 13 } },
+    xaxis: { title: "Normalised frequency (Nyquist = 1)", gridcolor: "#243044" },
+    yaxis: { title: "Magnitude (dB)", gridcolor: "#243044" },
+  }, { responsive: true, displayModeBar: false });
+
+  // 3D: |H| along unit circle
+  const s = unitCircle3D(b, a);
+  Plotly.newPlot("surfPlot", [
+    {
+      type: "scatter3d",
+      mode: "lines",
+      x: s.x, y: s.y, z: s.z,
+      line: { width: 6, color: s.c, colorscale: "Viridis" },
+      name: "|H| on unit circle",
+    },
+    {
+      type: "scatter3d",
+      mode: "markers",
+      x: zeros.map(z => z.re),
+      y: zeros.map(z => z.im),
+      z: zeros.map(() => 0),
+      marker: { size: 5, color: "#22c55e", symbol: "circle" },
+      name: "Zeros",
+    },
+    {
+      type: "scatter3d",
+      mode: "markers",
+      x: poles.map(p => p.re),
+      y: poles.map(p => p.im),
+      z: poles.map(() => 0),
+      marker: { size: 5, color: "#ef4444", symbol: "x" },
+      name: "Poles",
+    },
+  ], {
+    ...layoutBase,
+    title: { text: "3D view: unit circle in xy, height = |H(e^{jω})|  (drag to rotate)", font: { size: 13 } },
+    scene: {
+      xaxis: { title: "Re", range: [-1.3, 1.3], backgroundcolor: "#121a27", gridcolor: "#243044" },
+      yaxis: { title: "Im", range: [-1.3, 1.3], backgroundcolor: "#121a27", gridcolor: "#243044" },
+      zaxis: { title: "|H|", backgroundcolor: "#121a27", gridcolor: "#243044" },
+      aspectmode: "manual",
+      aspectratio: { x: 1, y: 1, z: 0.7 },
+      camera: { eye: { x: 1.5, y: 1.5, z: 1.1 } },
+    },
+    margin: { t: 40, r: 10, b: 10, l: 10 },
+    showlegend: true,
+  }, { responsive: true });
+}
+
+// Presets
+const PRESETS = {
+  fir: { b: "0.25, 0.5, 0.25", a: "" },
+  "biquad-lp": { b: "0.0675, 0.1349, 0.0675", a: "-1.143, 0.4128" },
+  "biquad-notch": { b: "1, -1.4142, 1", a: "-1.2732, 0.81" },
+  integrator: { b: "0.1", a: "-0.9" },
+  resonator: { b: "0.05, 0, -0.05", a: "-1.5, 0.9" },
+};
+
+document.querySelectorAll("[data-preset]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const p = PRESETS[btn.dataset.preset];
+    document.getElementById("bCoeffs").value = p.b;
+    document.getElementById("aCoeffs").value = p.a;
+    update();
+  });
+});
+
+document.getElementById("updateBtn").addEventListener("click", update);
+document.getElementById("clearBtn").addEventListener("click", () => {
+  document.getElementById("aCoeffs").value = "";
+  update();
+});
+["bCoeffs", "aCoeffs"].forEach(id => {
+  document.getElementById(id).addEventListener("keydown", e => {
+    if (e.key === "Enter") update();
+  });
+});
+
+update();
+</script>
+</body>
+</html>
