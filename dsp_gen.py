@@ -633,10 +633,19 @@ def generate_digital_mixer(
     phase_width: int = 32,
     lut_depth: int = 10,
 ) -> str:
+    """
+    Digital mixer = NCO (phase accumulator + sine LUT) + complex multiply.
+
+    Phase dither is mandatory (not optional): a free-running LFSR is added
+    to the phase word before LUT address truncation. This breaks the
+    periodicity of phase-truncation error and turns coherent spurs into
+    a broadband noise floor (better SFDR).
+    """
     e = VHDLEmitter("digital_mixer")
     e.add_generic("DATA_WIDTH", "positive", str(data_width))
     e.add_generic("PHASE_WIDTH", "positive", str(phase_width))
     e.add_generic("LUT_DEPTH", "positive", str(lut_depth))
+    e.add_generic("DITHER_WIDTH", "positive", "24")
 
     e.add_port("clk", "in", "std_logic")
     e.add_port("rst", "in", "std_logic")
@@ -648,6 +657,7 @@ def generate_digital_mixer(
     e.add_port("xout_im", "out", "signed(2*DATA_WIDTH downto 0)")
 
     e.add_decl("""
+  -- Full-wave sine LUT (sin and cos via quarter-wave address offset)
   type lut_t is array (0 to 2**LUT_DEPTH-1) of signed(DATA_WIDTH-1 downto 0);
   function init_sine return lut_t is
     variable l : lut_t;
@@ -662,7 +672,9 @@ def generate_digital_mixer(
   constant SINE_LUT : lut_t := init_sine;
 """)
     e.add_signal("phase_acc", "unsigned(PHASE_WIDTH-1 downto 0)")
-    e.add_signal("phase", "unsigned(PHASE_WIDTH-1 downto 0)")
+    e.add_signal("lfsr", "unsigned(DITHER_WIDTH-1 downto 0)")
+    e.add_signal("dither", "unsigned(PHASE_WIDTH-1 downto 0)")
+    e.add_signal("phase_dith", "unsigned(PHASE_WIDTH-1 downto 0)")
     e.add_signal("addr", "unsigned(LUT_DEPTH-1 downto 0)")
     e.add_signal("nco_sin", "signed(DATA_WIDTH-1 downto 0)")
     e.add_signal("nco_cos", "signed(DATA_WIDTH-1 downto 0)")
@@ -670,6 +682,9 @@ def generate_digital_mixer(
     e.add_signal("mul_im", "signed(2*DATA_WIDTH downto 0)")
 
     e.add_arch("""
+  --------------------------------------------------------------------------
+  -- Phase accumulator
+  --------------------------------------------------------------------------
   process(clk, rst)
   begin
     if rst = '1' then
@@ -681,11 +696,40 @@ def generate_digital_mixer(
     end if;
   end process;
 
-  phase   <= phase_acc;
-  addr    <= phase(PHASE_WIDTH-1 downto PHASE_WIDTH-LUT_DEPTH);
+  --------------------------------------------------------------------------
+  -- Mandatory phase dither: 24-bit LFSR
+  -- Polynomial: x^24 + x^23 + x^22 + x^17 + 1  (maximal length)
+  -- Dither is injected into the phase bits that are truncated when forming
+  -- the LUT address, so truncation error is no longer periodic; spurs
+  -- collapse into a noise floor.
+  --------------------------------------------------------------------------
+  process(clk, rst)
+    variable fb : std_logic;
+  begin
+    if rst = '1' then
+      lfsr <= (others => '1');  -- non-zero seed required
+    elsif rising_edge(clk) then
+      if ce = '1' then
+        fb := lfsr(23) xor lfsr(22) xor lfsr(21) xor lfsr(16);
+        lfsr <= lfsr(DITHER_WIDTH-2 downto 0) & fb;
+      end if;
+    end if;
+  end process;
+
+  -- Align LFSR into PHASE_WIDTH (zero-extend or truncate as needed)
+  dither <= resize(lfsr, PHASE_WIDTH);
+
+  phase_dith <= phase_acc + dither;
+
+  -- LUT address = top LUT_DEPTH bits of *dithered* phase
+  addr    <= phase_dith(PHASE_WIDTH-1 downto PHASE_WIDTH-LUT_DEPTH);
   nco_sin <= SINE_LUT(to_integer(addr));
+  -- Cosine = sine(+90 deg) = address + 1/4 LUT length
   nco_cos <= SINE_LUT(to_integer(addr + 2**(LUT_DEPTH-2)));
 
+  --------------------------------------------------------------------------
+  -- Complex multiply: (xin_re + j xin_im) * (cos + j sin)
+  --------------------------------------------------------------------------
   process(clk, rst)
   begin
     if rst = '1' then
@@ -1545,8 +1589,8 @@ def main():
         }[choice]
 
     out_path = OUTPUT_DIR / fname
-    out_path.write_text(vhdl)
-    print(f"  → Wrote {out_path}  ({len(vhdl.splitlines())} lines)")
+    out_path.write_text(vhdl, encoding="utf-8")
+    print(f"  -> Wrote {out_path}  ({len(vhdl.splitlines())} lines)")
     print("Done.")
 
 
