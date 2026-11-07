@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GNSS I/Q Rotation and DDS Mixer Explorer</title>
+<style>
+  :root { color-scheme: dark; --bg:#10151f; --panel:#182232; --line:#33445d; --text:#edf3fb; --muted:#a9b8ca; --blue:#55a7ff; --orange:#ffb454; --green:#54d6a0; --pink:#d69bff; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:22px; background:var(--bg); color:var(--text); font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  main { max-width:1120px; margin:auto; }
+  h1 { font-size:clamp(1.45rem,3vw,2rem); margin:0 0 6px; }
+  .intro { color:var(--muted); margin:0 0 18px; }
+  .controls,.panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; }
+  .controls { display:grid; grid-template-columns:repeat(3,minmax(180px,1fr)); gap:16px; margin-bottom:16px; }
+  label { display:block; color:var(--muted); font-size:13px; margin-bottom:6px; }
+  input[type=range] { width:100%; accent-color:var(--blue); }
+  .value { color:var(--text); font-weight:650; font-variant-numeric:tabular-nums; }
+  .buttons { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px; }
+  button { border:1px solid var(--line); background:#24344a; color:var(--text); border-radius:9px; padding:9px 13px; cursor:pointer; font-weight:600; }
+  button:hover { background:#304762; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .panel h2 { font-size:1.05rem; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:13px; margin:0 0 10px; }
+  canvas { display:block; width:100%; height:auto; background:#111a27; border:1px solid #2a3a50; border-radius:10px; }
+  .wide { grid-column:1/-1; }
+  .legend { display:flex; flex-wrap:wrap; gap:14px; color:var(--muted); font-size:12px; margin-top:8px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; }
+  .readouts { display:grid; grid-template-columns:repeat(4,1fr); gap:9px; margin-top:12px; }
+  .readout { background:#111a27; border:1px solid #2a3a50; border-radius:9px; padding:9px; min-width:0; }
+  .readout small { display:block; color:var(--muted); font-size:11px; }
+  .readout strong { font-size:clamp(14px,2vw,18px); font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+  .explain { margin-top:16px; background:#132b2a; border:1px solid #286354; border-radius:12px; padding:14px 16px; }
+  code { color:#d7e8ff; background:#101a29; padding:2px 5px; border-radius:5px; }
+  .formula { font-size:clamp(14px,2vw,18px); overflow-wrap:anywhere; margin:7px 0; }
+  @media(max-width:760px) { body{padding:12px}.controls{grid-template-columns:1fr}.grid{grid-template-columns:1fr}.wide{grid-column:auto}.readouts{grid-template-columns:repeat(2,1fr)} }
+</style>
+</head>
+<body>
+<main>
+  <h1>GNSS I/Q rotation and DDS mixer</h1>
+  <p class="intro">Watch the incoming I/Q vector rotate, the DDS rotate the other way, and their complex product stay still.</p>
+
+  <section class="controls">
+    <div>
+      <label for="freq">Residual input frequency: <span class="value" id="freqVal">8.700 MHz</span></label>
+      <input id="freq" type="range" min="0" max="20" step="0.01" value="8.7">
+      <label for="phase">Initial carrier phase: <span class="value" id="phaseVal">0°</span></label>
+      <input id="phase" type="range" min="0" max="360" step="1" value="0">
+    </div>
+    <div>
+      <label for="correction">DDS correction frequency: <span class="value" id="corrVal">8.700 MHz</span></label>
+      <input id="correction" type="range" min="0" max="20" step="0.01" value="8.7">
+      <label for="amplitude">Signal amplitude: <span class="value" id="ampVal">12000</span></label>
+      <input id="amplitude" type="range" min="1000" max="20000" step="100" value="12000">
+    </div>
+    <div>
+      <label>Sampling and DDS settings</label>
+      <div class="formula">\(f_s = 122.88\text{ MHz}\)</div>
+      <div class="formula">13-bit phase accumulator</div>
+      <div class="formula">FTW = round(\(f_{DDS}/f_s \times 8192\))</div>
+      <div class="buttons">
+        <button id="toggle">Pause animation</button>
+        <button id="step">Advance one ADC sample</button>
+        <button id="reset">Reset</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <article class="panel">
+      <h2>1. Incoming ADC signal</h2>
+      <p class="sub">The tip moves counterclockwise. Its coordinates are I = A cos(θ), Q = A sin(θ).</p>
+      <canvas id="inputPlane" width="520" height="360"></canvas>
+      <div class="legend"><span><i class="dot" style="background:var(--blue)"></i>Incoming vector</span><span>I = horizontal, Q = vertical</span></div>
+    </article>
+    <article class="panel">
+      <h2>2. DDS correction vector</h2>
+      <p class="sub">The DDS produces cos(ψ) − j sin(ψ), so it rotates clockwise.</p>
+      <canvas id="ddsPlane" width="520" height="360"></canvas>
+      <div class="legend"><span><i class="dot" style="background:var(--orange)"></i>DDS vector</span><span>Negative Q means clockwise rotation</span></div>
+    </article>
+    <article class="panel wide">
+      <h2>3. Complex mixer output</h2>
+      <p class="sub">Complex multiplication adds the two vector angles: output angle = input angle − DDS phase.</p>
+      <canvas id="outputPlane" width="1040" height="300"></canvas>
+      <div class="legend"><span><i class="dot" style="background:var(--green)"></i>Corrected output vector</span><span><i class="dot" style="background:var(--pink)"></i>Output tip trail</span></div>
+      <div class="readouts">
+        <div class="readout"><small>Input phase</small><strong id="inPhase">0°</strong></div>
+        <div class="readout"><small>DDS phase (magnitude)</small><strong id="ddsPhase">0°</strong></div>
+        <div class="readout"><small>Output I</small><strong id="outI">12000</strong></div>
+        <div class="readout"><small>Output Q</small><strong id="outQ">0</strong></div>
+      </div>
+    </article>
+    <article class="panel wide">
+      <h2>4. I and Q samples over time</h2>
+      <p class="sub">The input traces oscillate. When correction frequency matches the input, output I/Q are constant (or constant at a nonzero phase).</p>
+      <canvas id="traces" width="1040" height="300"></canvas>
+      <div class="legend"><span><i class="dot" style="background:var(--blue)"></i>Input I</span><span><i class="dot" style="background:var(--orange)"></i>Input Q</span><span><i class="dot" style="background:var(--green)"></i>Output I (scaled)</span><span><i class="dot" style="background:var(--pink)"></i>Output Q (scaled)</span></div>
+    </article>
+  </section>
+
+  <section class="explain">
+    <strong>What to try</strong>
+    <ol>
+      <li>Keep both frequencies at 8.70 MHz. The input vector spins, the DDS spins backwards, and the output vector stays fixed.</li>
+      <li>Set the initial phase to 60°. The output stays fixed but points at 60°: carrier wipeoff removes frequency, not unknown starting phase.</li>
+      <li>Change DDS correction to 8.60 MHz. The output now rotates slowly at +100 kHz because 8.70 − 8.60 = 0.10 MHz.</li>
+    </ol>
+    <div class="formula"><b>Complex multiplication:</b> \((I+jQ)(D_I+jD_Q)\)</div>
+    <div class="formula">\(I_{out}=I D_I-Q D_Q,\quad Q_{out}=I D_Q+Q D_I\)</div>
+    <div class="formula">\(f_{residual}=f_{input}-f_{DDS}\)</div>
+  </section>
+</main>
+<script>
+(() => {
+  const fs = 122.88e6, phaseMod = 8192;
+  const el = id => document.getElementById(id);
+  const freq = el('freq'), corr = el('correction'), phase = el('phase'), amp = el('amplitude');
+  let sample = 0, running = true, last = 0, trail = [];
+  const canvases = ['inputPlane','ddsPlane','outputPlane','traces'];
+  const ctx = Object.fromEntries(canvases.map(id => [id, el(id).getContext('2d')]));
+  const colors = {blue:'#55a7ff',orange:'#ffb454',green:'#54d6a0',pink:'#d69bff',grid:'#34465e',text:'#edf3fb',muted:'#a9b8ca'};
+  const rad = d => d*Math.PI/180;
+  const wrap = a => ((a%(2*Math.PI))+2*Math.PI)%(2*Math.PI);
+  const signed = a => Math.atan2(Math.sin(a),Math.cos(a));
+  const getState = () => {
+    const fin = +freq.value*1e6, fd = +corr.value*1e6, A = +amp.value;
+    const theta = rad(+phase.value) + 2*Math.PI*fin*sample/fs;
+    const psi = 2*Math.PI*fd*sample/fs;
+    const i = A*Math.cos(theta), q = A*Math.sin(theta);
+    const di = Math.cos(psi), dq = -Math.sin(psi);
+    const oi = i*di - q*dq, oq = i*dq + q*di;
+    return {fin,fd,A,theta,psi,i,q,di,dq,oi,oq};
+  };
+  function setup(c,w,h) {
+    c.clearRect(0,0,w,h);
+    c.fillStyle='#111a27'; c.fillRect(0,0,w,h);
+    c.strokeStyle=colors.grid; c.lineWidth=1;
+    for(let k=-2;k<=2;k++) {
+      const x=w/2+k*w/5, y=h/2+k*h/5;
+      c.beginPath(); c.moveTo(x,12); c.lineTo(x,h-12); c.stroke();
+      c.beginPath(); c.moveTo(12,y); c.lineTo(w-12,y); c.stroke();
+    }
+    c.strokeStyle='#9aabc0'; c.globalAlpha=.8;
+    c.beginPath(); c.moveTo(18,h/2); c.lineTo(w-18,h/2); c.stroke();
+    c.beginPath(); c.moveTo(w/2,12); c.lineTo(w/2,h-12); c.stroke();
+    c.globalAlpha=1;
+    c.fillStyle=colors.muted; c.font='13px system-ui';
+    c.fillText('I',w-25,h/2-8); c.fillText('Q',w/2+8,22);
+  }
+  function vector(id, angle, color, label, A=1) {
+    const c=ctx[id], w=c.canvas.width,h=c.canvas.height, cx=w/2,cy=h/2, r=Math.min(w,h)*.36;
+    setup(c,w,h);
+    c.strokeStyle=color; c.lineWidth=4; c.beginPath(); c.moveTo(cx,cy); c.lineTo(cx+r*A*Math.cos(angle),cy-r*A*Math.sin(angle)); c.stroke();
+    const x=cx+r*A*Math.cos(angle), y=cy-r*A*Math.sin(angle);
+    c.fillStyle=color; c.beginPath(); c.arc(x,y,7,0,2*Math.PI); c.fill();
+    c.fillStyle=colors.text; c.font='bold 15px system-ui'; c.fillText(label,18,27);
+    c.fillStyle=colors.muted; c.font='12px system-ui'; c.fillText('Vector tip',Math.min(w-85,x+10),Math.max(42,y-10));
+    c.fillText('angle: '+(angle*180/Math.PI).toFixed(1)+'°',18,h-18);
+  }
+  function drawOutput(s) {
+    const c=ctx.outputPlane,w=c.canvas.width,h=c.canvas.height,cx=w/2,cy=h/2,r=Math.min(w,h)*.34;
+    setup(c,w,h);
+    c.strokeStyle=colors.grid;c.setLineDash([5,5]);c.beginPath();c.arc(cx,cy,r,0,2*Math.PI);c.stroke();c.setLineDash([]);
+    trail.push([s.oi/s.A,s.oq/s.A]); if(trail.length>100)trail.shift();
+    c.strokeStyle=colors.pink;c.globalAlpha=.65;c.lineWidth=2;c.beginPath();
+    trail.forEach((p,i)=>{const x=cx+p[0]*r,y=cy-p[1]*r;i?c.lineTo(x,y):c.moveTo(x,y)});c.stroke();c.globalAlpha=1;
+    const a=Math.atan2(s.oq,s.oi), mag=Math.hypot(s.oi,s.oq)/s.A;
+    c.strokeStyle=colors.green;c.lineWidth=4;c.beginPath();c.moveTo(cx,cy);c.lineTo(cx+r*mag*Math.cos(a),cy-r*mag*Math.sin(a));c.stroke();
+    c.fillStyle=colors.green;c.beginPath();c.arc(cx+r*mag*Math.cos(a),cy-r*mag*Math.sin(a),7,0,2*Math.PI);c.fill();
+    c.fillStyle=colors.text;c.font='bold 15px system-ui';c.fillText('Product: X × DDS',18,27);
+    c.fillStyle=colors.muted;c.font='13px system-ui';c.fillText('Output angle = '+(a*180/Math.PI).toFixed(1)+'°',18,h-18);
+  }
+  function drawTraces() {
+    const c=ctx.traces,w=c.canvas.width,h=c.canvas.height;
+    setup(c,w,h);
+    const s=getState(), A=s.A, span=100;
+    const plot=(color,fn)=>{c.strokeStyle=color;c.lineWidth=2.5;c.beginPath();for(let x=0;x<w-30;x++){const n=sample-span+(x/(w-30))*span;const th=rad(+phase.value)+2*Math.PI*s.fin*n/fs, ps=2*Math.PI*s.fd*n/fs;const iv=A*Math.cos(th),qv=A*Math.sin(th),di=Math.cos(ps),dq=-Math.sin(ps);const ovI=iv*di-qv*dq,ovQ=iv*dq+qv*di;const v=fn(iv,qv,ovI,ovQ)/A;const y=h/2-v*h*.38;x?c.lineTo(x+15,y):c.moveTo(x+15,y)}c.stroke()};
+    plot(colors.blue,(i,q)=>i);plot(colors.orange,(i,q)=>q);
+    plot(colors.green,(i,q,oi,oq)=>oi);plot(colors.pink,(i,q,oi,oq)=>oq);
+    c.fillStyle=colors.muted;c.font='12px system-ui';c.fillText('Earlier samples',16,h-14);c.fillText('Current sample →',w-135,h-14);
+  }
+  function render() {
+    const s=getState(), ftw=Math.round(s.fd/fs*phaseMod), actual=ftw/phaseMod*fs;
+    el('freqVal').textContent=(s.fin/1e6).toFixed(3)+' MHz';
+    el('corrVal').textContent=(s.fd/1e6).toFixed(3)+' MHz';
+    el('phaseVal').textContent=phase.value+'°';el('ampVal').textContent=amp.value;
+    el('inPhase').textContent=(wrap(s.theta)*180/Math.PI).toFixed(1)+'°';
+    el('ddsPhase').textContent=(wrap(s.psi)*180/Math.PI).toFixed(1)+'°';
+    el('outI').textContent=Math.round(s.oi).toLocaleString();
+    el('outQ').textContent=Math.round(s.oq).toLocaleString();
+    vector('inputPlane',s.theta,colors.blue,'Incoming: CCW');
+    vector('ddsPlane',-s.psi,colors.orange,'DDS: CW');
+    drawOutput(s);drawTraces();
+    el('toggle').textContent=running?'Pause animation':'Play animation';
+    el('ftwText')?.remove();
+    const f=document.createElement('div');f.id='ftwText';f.className='sub';f.textContent=`At 13 bits: FTW = ${ftw}; quantized DDS frequency = ${(actual/1e6).toFixed(5)} MHz; residual after quantization ≈ ${(s.fin-actual).toFixed(0)} Hz.`;
+    document.querySelector('.controls > div:last-child').appendChild(f);
+  }
+  function tick(t) {
+    if(!last)last=t;
+    if(running && t-last>45) { sample += 1; last=t; render(); }
+    requestAnimationFrame(tick);
+  }
+  [freq,corr,phase,amp].forEach(x=>x.addEventListener('input',()=>{trail=[];render()}));
+  el('toggle').addEventListener('click',()=>{running=!running;render()});
+  el('step').addEventListener('click',()=>{sample++;render()});
+  el('reset').addEventListener('click',()=>{sample=0;trail=[];render()});
+  render();requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
