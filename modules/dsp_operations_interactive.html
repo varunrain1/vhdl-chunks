@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Interactive DSP Operations</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --card: #151c2c;
+      --border: #2a3548;
+      --text: #e8eef7;
+      --muted: #8b9cb3;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+      padding: 14px;
+    }
+    h1 {
+      font-size: 1.45rem;
+      margin-bottom: 2px;
+      background: linear-gradient(90deg, #60a5fa, #34d399);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .subtitle { color: var(--muted); font-size: 0.88rem; margin-bottom: 14px; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      gap: 16px;
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+    @media (max-width: 860px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+      height: fit-content;
+    }
+    .panel h2 {
+      font-size: 0.95rem;
+      color: #60a5fa;
+      margin-bottom: 10px;
+    }
+
+    .ops { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+    .op-btn {
+      background: #1c2638;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 7px;
+      cursor: pointer;
+      text-align: left;
+      font-size: 0.84rem;
+      transition: 0.12s;
+    }
+    .op-btn:hover { background: #243044; }
+    .op-btn.active {
+      background: #0f2a24;
+      border-color: #10b981;
+      box-shadow: inset 0 0 0 1px #10b98144;
+    }
+    .op-btn .name { font-weight: 600; display: block; }
+    .op-btn .desc { font-size: 0.72rem; color: var(--muted); }
+
+    label {
+      display: block;
+      font-size: 0.76rem;
+      color: var(--muted);
+      margin: 8px 0 3px;
+    }
+    .val { float: right; color: var(--text); font-variant-numeric: tabular-nums; }
+    input[type="range"] { width: 100%; accent-color: #3b82f6; }
+
+    .info-box {
+      background: #0f1724;
+      border-left: 3px solid #3b82f6;
+      padding: 9px 11px;
+      border-radius: 0 7px 7px 0;
+      font-size: 0.8rem;
+      margin-top: 12px;
+      color: #c5d0e0;
+      line-height: 1.4;
+    }
+    .info-box strong { color: #34d399; }
+
+    .charts-col { display: flex; flex-direction: column; gap: 14px; }
+    .chart-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px 8px;
+    }
+    .chart-card h3 {
+      font-size: 0.82rem;
+      color: var(--muted);
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+    .chart-wrap {
+      position: relative;
+      width: 100%;
+      height: 270px;
+    }
+    .chart-wrap canvas {
+      width: 100% !important;
+      height: 100% !important;
+    }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .chk {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-top: 10px;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <h1>Interactive DSP Operations</h1>
+  <p class="subtitle">Attenuation · FIR Filter · Down/Up Conversion · Down/Up Sampling</p>
+
+  <div class="layout">
+    <!-- CONTROLS -->
+    <div class="panel">
+      <h2>① Input Signal</h2>
+      <div class="row2">
+        <div>
+          <label>Freq 1 (Hz) <span class="val" id="f1v">35</span></label>
+          <input type="range" id="f1" min="8" max="110" value="35" step="1">
+        </div>
+        <div>
+          <label>Amp 1 <span class="val" id="a1v">1.00</span></label>
+          <input type="range" id="a1" min="0" max="1.4" value="1" step="0.05">
+        </div>
+        <div>
+          <label>Freq 2 (Hz) <span class="val" id="f2v">85</span></label>
+          <input type="range" id="f2" min="8" max="160" value="85" step="1">
+        </div>
+        <div>
+          <label>Amp 2 <span class="val" id="a2v">0.55</span></label>
+          <input type="range" id="a2" min="0" max="1.4" value="0.55" step="0.05">
+        </div>
+      </div>
+      <label>Noise <span class="val" id="nv">0.04</span></label>
+      <input type="range" id="noise" min="0" max="0.3" value="0.04" step="0.01">
+
+      <h2 style="margin-top:16px">② Operation</h2>
+      <div class="ops">
+        <button class="op-btn active" data-op="none">
+          <span class="name">Original</span>
+          <span class="desc">Raw multi-tone + noise</span>
+        </button>
+        <button class="op-btn" data-op="attenuate">
+          <span class="name">Attenuation (Gain)</span>
+          <span class="desc">Multiply amplitude by constant</span>
+        </button>
+        <button class="op-btn" data-op="fir">
+          <span class="name">FIR Low-pass Filter</span>
+          <span class="desc">Frequency-selective smoothing</span>
+        </button>
+        <button class="op-btn" data-op="downconv">
+          <span class="name">Down Conversion</span>
+          <span class="desc">Mix + LPF → shift spectrum down</span>
+        </button>
+        <button class="op-btn" data-op="upconv">
+          <span class="name">Up Conversion</span>
+          <span class="desc">Mix with LO → shift spectrum up</span>
+        </button>
+        <button class="op-btn" data-op="downsample">
+          <span class="name">Down Sampling</span>
+          <span class="desc">Keep every M-th sample</span>
+        </button>
+        <button class="op-btn" data-op="upsample">
+          <span class="name">Up Sampling</span>
+          <span class="desc">Zero-insert + anti-image LPF</span>
+        </button>
+      </div>
+
+      <div id="params"></div>
+
+      <div class="info-box" id="info">
+        Select an operation. Blue = original, green = processed.
+      </div>
+    </div>
+
+    <!-- CHARTS -->
+    <div class="charts-col">
+      <div class="chart-card">
+        <h3>Time Domain (first ~80 ms)</h3>
+        <div class="chart-wrap"><canvas id="timeChart"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <h3>Frequency Domain (Magnitude)</h3>
+        <div class="chart-wrap"><canvas id="freqChart"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ===================== Config ===================== */
+const FS = 400;
+const N  = 400;
+const DT = 1 / FS;
+
+/* ===================== State ===================== */
+let currentOp = 'none';
+const P = {
+  gain: 0.35,
+  firCutoff: 55,
+  firTaps: 33,
+  loFreq: 45,
+  M: 3,
+  L: 2,
+  antiAlias: true
+};
+
+/* ===================== Signal ===================== */
+function genSignal() {
+  const f1 = +document.getElementById('f1').value;
+  const a1 = +document.getElementById('a1').value;
+  const f2 = +document.getElementById('f2').value;
+  const a2 = +document.getElementById('a2').value;
+  const noise = +document.getElementById('noise').value;
+
+  const x = new Float64Array(N);
+  for (let n = 0; n < N; n++) {
+    const t = n * DT;
+    x[n] = a1 * Math.sin(2 * Math.PI * f1 * t)
+         + a2 * Math.sin(2 * Math.PI * f2 * t)
+         + noise * (Math.random() * 2 - 1);
+  }
+  return x;
+}
+
+/* ===================== Spectrum (DFT) ===================== */
+function spectrum(sig, fs) {
+  const n = sig.length;
+  const half = Math.floor(n / 2);
+  const mag = new Float64Array(half + 1);
+  const freqs = new Float64Array(half + 1);
+
+  for (let k = 0; k <= half; k++) {
+    let re = 0, im = 0;
+    const w = -2 * Math.PI * k / n;
+    for (let i = 0; i < n; i++) {
+      const a = w * i;
+      re += sig[i] * Math.cos(a);
+      im += sig[i] * Math.sin(a);
+    }
+    mag[k] = Math.sqrt(re * re + im * im) * (2 / n);
+    if (k === 0) mag[k] *= 0.5;
+    freqs[k] = k * fs / n;
+  }
+  return { freqs, mag };
+}
+
+/* ===================== FIR ===================== */
+function designFIR(fcHz, taps, fs) {
+  const M = taps - 1;
+  const fc = fcHz / fs;
+  const h = new Float64Array(taps);
+  let sum = 0;
+  for (let n = 0; n < taps; n++) {
+    const m = n - M / 2;
+    let v = (Math.abs(m) < 1e-12) ? 2 * fc : Math.sin(2 * Math.PI * fc * m) / (Math.PI * m);
+    v *= 0.54 - 0.46 * Math.cos(2 * Math.PI * n / M);
+    h[n] = v;
+    sum += v;
+  }
+  for (let i = 0; i < taps; i++) h[i] /= sum;
+  return h;
+}
+
+function applyFIR(sig, h) {
+  const out = new Float64Array(sig.length);
+  const M = h.length;
+  for (let n = 0; n < sig.length; n++) {
+    let acc = 0;
+    for (let k = 0; k < M; k++) {
+      const idx = n - k;
+      if (idx >= 0) acc += h[k] * sig[idx];
+    }
+    out[n] = acc;
+  }
+  return out;
+}
+
+function mix(sig, lo, fs) {
+  const out = new Float64Array(sig.length);
+  for (let n = 0; n < sig.length; n++) {
+    out[n] = sig[n] * Math.cos(2 * Math.PI * lo * n / fs);
+  }
+  return out;
+}
+
+function downsample(sig, M) {
+  const len = Math.floor(sig.length / M);
+  const out = new Float64Array(len);
+  for (let i = 0; i < len; i++) out[i] = sig[i * M];
+  return out;
+}
+
+function upsampleZeros(sig, L) {
+  const out = new Float64Array(sig.length * L);
+  for (let i = 0; i < sig.length; i++) out[i * L] = sig[i];
+  return out;
+}
+
+/* ===================== Process ===================== */
+function process(op, x) {
+  let y = Float64Array.from(x);
+  let fsY = FS;
+  let note = '';
+
+  switch (op) {
+    case 'none':
+      note = 'Original signal. Two tones + noise. Spectrum peaks sit at the tone frequencies.';
+      break;
+
+    case 'attenuate':
+      y = x.map(v => v * P.gain);
+      note = '<strong>Attenuation / Gain</strong> multiplies every sample by ' + P.gain.toFixed(2) + '. Amplitude drops uniformly. Spectrum peaks scale by the same factor — no frequency selectivity.';
+      break;
+
+    case 'fir': {
+      const h = designFIR(P.firCutoff, P.firTaps, FS);
+      y = applyFIR(x, h);
+      note = '<strong>FIR Low-pass</strong> (' + P.firTaps + ' taps, cutoff ≈ ' + P.firCutoff + ' Hz). Higher frequencies are attenuated while lower ones pass.';
+      break;
+    }
+
+    case 'downconv': {
+      const mixed = mix(x, P.loFreq, FS);
+      const h = designFIR(Math.max(25, P.loFreq * 0.65), 45, FS);
+      y = applyFIR(mixed, h);
+      note = '<strong>Down-conversion</strong>: multiply by LO (' + P.loFreq + ' Hz) then low-pass. Original tones move to |f − LO|.';
+      break;
+    }
+
+    case 'upconv':
+      y = mix(x, P.loFreq, FS);
+      note = '<strong>Up-conversion</strong>: multiply by LO (' + P.loFreq + ' Hz). Creates sum and difference frequencies (f+LO and |f−LO|).';
+      break;
+
+    case 'downsample': {
+      if (P.antiAlias) {
+        const cut = (FS / P.M) / 2 * 0.85;
+        const h = designFIR(cut, 45, FS);
+        y = applyFIR(x, h);
+      }
+      y = downsample(y, P.M);
+      fsY = FS / P.M;
+      note = '<strong>Down-sampling</strong> by M=' + P.M + ' (new fs = ' + fsY.toFixed(0) + ' Hz). ' +
+        (P.antiAlias
+          ? 'Anti-alias FIR applied first → clean baseband.'
+          : '<span style="color:#f87171">No anti-alias filter → high frequencies fold (alias).</span>');
+      break;
+    }
+
+    case 'upsample': {
+      const zeros = upsampleZeros(x, P.L);
+      const cut = (FS / 2) * 0.9;
+      const h = designFIR(cut, 55, FS * P.L);
+      y = applyFIR(zeros, h);
+      for (let i = 0; i < y.length; i++) y[i] *= P.L;
+      fsY = FS * P.L;
+      note = '<strong>Up-sampling</strong> by L=' + P.L + ' (new fs = ' + fsY + ' Hz). Zero-insertion creates images; FIR removes them.';
+      break;
+    }
+  }
+  return { y, fsY, note };
+}
+
+/* ===================== Charts ===================== */
+let timeChart, freqChart;
+
+function makeCharts() {
+  const gridColor = '#1e2a3a';
+  const tickColor = '#8b9cb3';
+
+  timeChart = new Chart(document.getElementById('timeChart'), {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: 'Original',
+          data: [],
+          borderColor: '#60a5fa',
+          borderWidth: 1.8,
+          pointRadius: 0,
+          tension: 0.1
+        },
+        {
+          label: 'Processed',
+          data: [],
+          borderColor: '#34d399',
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.1
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      parsing: false,
+      scales: {
+        x: {
+          type: 'linear',
+          title: { display: true, text: 'Time (ms)', color: tickColor },
+          ticks: { color: tickColor, maxTicksLimit: 9 },
+          grid: { color: gridColor }
+        },
+        y: {
+          title: { display: true, text: 'Amplitude', color: tickColor },
+          ticks: { color: tickColor },
+          grid: { color: gridColor }
+        }
+      },
+      plugins: {
+        legend: { labels: { color: '#c5d0e0', boxWidth: 12 } }
+      }
+    }
+  });
+
+  freqChart = new Chart(document.getElementById('freqChart'), {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: 'Original',
+          data: [],
+          borderColor: '#60a5fa',
+          backgroundColor: 'rgba(96,165,250,0.15)',
+          borderWidth: 1.6,
+          pointRadius: 0,
+          fill: true
+        },
+        {
+          label: 'Processed',
+          data: [],
+          borderColor: '#34d399',
+          backgroundColor: 'rgba(52,211,153,0.12)',
+          borderWidth: 1.8,
+          pointRadius: 0,
+          fill: true
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      parsing: false,
+      scales: {
+        x: {
+          type: 'linear',
+          title: { display: true, text: 'Frequency (Hz)', color: tickColor },
+          ticks: { color: tickColor, maxTicksLimit: 10 },
+          grid: { color: gridColor },
+          min: 0
+        },
+        y: {
+          title: { display: true, text: 'Magnitude', color: tickColor },
+          ticks: { color: tickColor },
+          grid: { color: gridColor },
+          beginAtZero: true
+        }
+      },
+      plugins: {
+        legend: { labels: { color: '#c5d0e0', boxWidth: 12 } }
+      }
+    }
+  });
+}
+
+/* ===================== Update ===================== */
+function update() {
+  document.getElementById('f1v').textContent = document.getElementById('f1').value;
+  document.getElementById('a1v').textContent = (+document.getElementById('a1').value).toFixed(2);
+  document.getElementById('f2v').textContent = document.getElementById('f2').value;
+  document.getElementById('a2v').textContent = (+document.getElementById('a2').value).toFixed(2);
+  document.getElementById('nv').textContent  = (+document.getElementById('noise').value).toFixed(2);
+
+  const x = genSignal();
+  const { y, fsY, note } = process(currentOp, x);
+
+  // Time domain (~80 ms window)
+  const tWinMs = 80;
+  const nOrig = Math.min(x.length, Math.round((tWinMs / 1000) * FS));
+  const nProc = Math.min(y.length, Math.round((tWinMs / 1000) * fsY));
+
+  const tOrig = [];
+  for (let i = 0; i < nOrig; i++) {
+    tOrig.push({ x: i * DT * 1000, y: x[i] });
+  }
+
+  const dtY = 1 / fsY;
+  const tProc = [];
+  for (let i = 0; i < nProc; i++) {
+    tProc.push({ x: i * dtY * 1000, y: y[i] });
+  }
+
+  const isDown = (currentOp === 'downsample');
+  timeChart.data.datasets[0].data = tOrig;
+  timeChart.data.datasets[1].data = tProc;
+  timeChart.data.datasets[1].pointRadius = isDown ? 3.5 : 0;
+  timeChart.data.datasets[1].pointBackgroundColor = '#34d399';
+  timeChart.update('none');
+
+  // Frequency domain
+  const sOrig = spectrum(x, FS);
+  const sProc = spectrum(y, fsY);
+
+  const maxF = Math.max(FS / 2, fsY / 2) * 1.05;
+
+  const dOrig = [];
+  for (let i = 0; i < sOrig.freqs.length; i++) {
+    if (sOrig.freqs[i] <= maxF) {
+      dOrig.push({ x: sOrig.freqs[i], y: sOrig.mag[i] });
+    }
+  }
+
+  const dProc = [];
+  for (let i = 0; i < sProc.freqs.length; i++) {
+    if (sProc.freqs[i] <= maxF) {
+      dProc.push({ x: sProc.freqs[i], y: sProc.mag[i] });
+    }
+  }
+
+  freqChart.data.datasets[0].data = dOrig;
+  freqChart.data.datasets[1].data = dProc;
+  freqChart.options.scales.x.max = maxF;
+  freqChart.update('none');
+
+  document.getElementById('info').innerHTML = note;
+}
+
+/* ===================== Params UI ===================== */
+function renderParams() {
+  const el = document.getElementById('params');
+  let html = '';
+
+  if (currentOp === 'attenuate') {
+    html = '<label>Gain <span class="val" id="gv">' + P.gain.toFixed(2) + '</span></label>' +
+           '<input type="range" id="gain" min="0.05" max="1.2" value="' + P.gain + '" step="0.05">';
+  } else if (currentOp === 'fir') {
+    html = '<label>Cutoff (Hz) <span class="val" id="cv">' + P.firCutoff + '</span></label>' +
+           '<input type="range" id="cutoff" min="15" max="140" value="' + P.firCutoff + '" step="5">' +
+           '<label>Taps <span class="val" id="tv">' + P.firTaps + '</span></label>' +
+           '<input type="range" id="taps" min="15" max="71" value="' + P.firTaps + '" step="2">';
+  } else if (currentOp === 'downconv' || currentOp === 'upconv') {
+    html = '<label>LO Frequency (Hz) <span class="val" id="lov">' + P.loFreq + '</span></label>' +
+           '<input type="range" id="lo" min="10" max="130" value="' + P.loFreq + '" step="5">';
+  } else if (currentOp === 'downsample') {
+    html = '<label>Factor M <span class="val" id="mv">' + P.M + '</span></label>' +
+           '<input type="range" id="m" min="2" max="6" value="' + P.M + '" step="1">' +
+           '<label class="chk"><input type="checkbox" id="aa" ' + (P.antiAlias ? 'checked' : '') + '> Apply anti-alias FIR first</label>';
+  } else if (currentOp === 'upsample') {
+    html = '<label>Factor L <span class="val" id="lv">' + P.L + '</span></label>' +
+           '<input type="range" id="l" min="2" max="4" value="' + P.L + '" step="1">';
+  }
+
+  el.innerHTML = html;
+
+  const gainEl = document.getElementById('gain');
+  if (gainEl) {
+    gainEl.oninput = function(e) {
+      P.gain = +e.target.value;
+      document.getElementById('gv').textContent = P.gain.toFixed(2);
+      update();
+    };
+  }
+
+  const cutoffEl = document.getElementById('cutoff');
+  if (cutoffEl) {
+    cutoffEl.oninput = function(e) {
+      P.firCutoff = +e.target.value;
+      document.getElementById('cv').textContent = P.firCutoff;
+      update();
+    };
+    document.getElementById('taps').oninput = function(e) {
+      P.firTaps = +e.target.value;
+      document.getElementById('tv').textContent = P.firTaps;
+      update();
+    };
+  }
+
+  const loEl = document.getElementById('lo');
+  if (loEl) {
+    loEl.oninput = function(e) {
+      P.loFreq = +e.target.value;
+      document.getElementById('lov').textContent = P.loFreq;
+      update();
+    };
+  }
+
+  const mEl = document.getElementById('m');
+  if (mEl) {
+    mEl.oninput = function(e) {
+      P.M = +e.target.value;
+      document.getElementById('mv').textContent = P.M;
+      update();
+    };
+    document.getElementById('aa').onchange = function(e) {
+      P.antiAlias = e.target.checked;
+      update();
+    };
+  }
+
+  const lEl = document.getElementById('l');
+  if (lEl) {
+    lEl.oninput = function(e) {
+      P.L = +e.target.value;
+      document.getElementById('lv').textContent = P.L;
+      update();
+    };
+  }
+}
+
+/* ===================== Events ===================== */
+document.querySelectorAll('.op-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.op-btn').forEach(function(b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+    currentOp = btn.dataset.op;
+    renderParams();
+    update();
+  });
+});
+
+['f1', 'a1', 'f2', 'a2', 'noise'].forEach(function(id) {
+  document.getElementById(id).addEventListener('input', update);
+});
+
+/* ===================== Boot ===================== */
+makeCharts();
+renderParams();
+update();
+</script>
+</body>
+</html>
